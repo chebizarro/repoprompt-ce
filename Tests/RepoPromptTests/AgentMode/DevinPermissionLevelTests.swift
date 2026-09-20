@@ -542,7 +542,14 @@ final class DevinPermissionLevelTests: XCTestCase {
             "allow_always_global",
             "allow_all_fetches",
             "allow_server_always",
-            "net_allow_always"
+            "net_allow_always",
+            // Unlisted variants the pattern rules must catch so a new Devin mode or
+            // global grant cannot silently become selectable.
+            "switch_smart",
+            "switch_auto",
+            "plan_smart",
+            "allow_tools_global",
+            "net_grant_always"
         ] {
             XCTAssertFalse(
                 ACPPermissionOptionPolicy.isAutoSelectable(optionID: optionID, for: .devin),
