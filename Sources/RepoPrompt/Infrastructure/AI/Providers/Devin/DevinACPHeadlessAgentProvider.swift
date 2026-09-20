@@ -41,10 +41,18 @@ final class DevinACPHeadlessAgentProvider: HeadlessAgentProvider {
         )
     }
 
+    /// Headless runs are unattended: the bridge declines any permission request the
+    /// controller does not auto-approve, so a mid-run prompt fails the whole run. The
+    /// launch mode therefore comes from `unattendedCLIPermissionMode` — an explicitly
+    /// configured Full Approval reaches argv as `dangerous`, and every other level keeps
+    /// the `auto` floor. The flag is only sent when the RepoPrompt MCP server is injected;
+    /// model discovery keeps the provider default.
     static func makeRunRequest(
         config: DevinAgentConfig,
         workspacePath: String?,
-        message: AgentMessage
+        message: AgentMessage,
+        configuredPermissionLevel: DevinAgentToolPreferences.PermissionLevel =
+            DevinAgentToolPreferences.permissionLevel()
     ) -> ACPRunRequest {
         ACPRunRequest(
             agentKind: .devin,
@@ -53,7 +61,9 @@ final class DevinACPHeadlessAgentProvider: HeadlessAgentProvider {
             resumeSessionID: message.resumeSessionID,
             attachments: [],
             taskLabelKind: nil,
-            launchPermissionMode: config.includeRepoPromptMCPServer ? "auto" : nil
+            launchPermissionMode: config.includeRepoPromptMCPServer
+                ? configuredPermissionLevel.unattendedCLIPermissionMode
+                : nil
         )
     }
 

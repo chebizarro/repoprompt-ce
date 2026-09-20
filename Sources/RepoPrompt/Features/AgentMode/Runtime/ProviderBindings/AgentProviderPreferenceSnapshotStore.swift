@@ -156,11 +156,14 @@ final class AgentProviderPreferenceSnapshotStore {
             )
         case .devin:
             let level = effectiveDevinPermissionLevel(profile: profile)
-            // Devin's level becomes a launch-time `--permission-mode` argument. RepoPrompt
-            // does not auto-select Devin permission options, so the auto-approval flags stay
-            // false for every mode.
+            // Devin's level becomes a launch-time `--permission-mode` argument, so a level
+            // change can never re-flag a running process. Full Approval additionally settles
+            // a stranded pending prompt with the provider's session-scoped allow — the next
+            // run relaunches under `dangerous` either way. Strict per-request auto-approval
+            // of RepoPrompt MCP tools is handled inside the session controller, not here.
             return AgentProviderRuntimePermissionBinding(
-                acpLaunchPermissionMode: level.cliPermissionMode
+                acpLaunchPermissionMode: level.cliPermissionMode,
+                acceptsPendingACPApprovalWhenActivated: level == .fullApproval
             )
         }
     }

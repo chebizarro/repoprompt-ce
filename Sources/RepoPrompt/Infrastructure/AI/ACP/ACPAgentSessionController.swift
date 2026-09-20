@@ -462,7 +462,7 @@ actor ACPAgentSessionController {
             throw ControllerError.invalidState(expected: "idle", actual: state)
         }
         state = .launching
-        log("Launching ACP transport")
+        log("Launching ACP transport (launchPermissionMode=\(launchedPermissionMode ?? "none"), autoApproveAll=\(autoApproveAllToolPermissions))")
         diagnose(.phaseStarted("launch"))
         let environment = await resolvedEnvironment()
         try Self.preflightInjectedMCPServers(in: sessionConfiguration, environment: environment)
@@ -1204,20 +1204,26 @@ actor ACPAgentSessionController {
                     "outcome": "cancelled"
                 ]
             ]
-        case .accept:
-            [
-                "outcome": [
-                    "outcome": "selected",
-                    "optionId": preferredAllowOptionID(for: pending.options, sessionScoped: false)
+        case .accept, .acceptForSession, .acceptWithExecpolicyAmendment:
+            if let optionID = preferredAllowOptionID(
+                for: pending.options,
+                sessionScoped: decision != .accept
+            ) {
+                [
+                    "outcome": [
+                        "outcome": "selected",
+                        "optionId": optionID
+                    ]
                 ]
-            ]
-        case .acceptForSession, .acceptWithExecpolicyAmendment:
-            [
-                "outcome": [
-                    "outcome": "selected",
-                    "optionId": preferredAllowOptionID(for: pending.options, sessionScoped: true)
+            } else {
+                // The agent offered no selectable allow option (e.g. only a denylisted
+                // mode switch): cancel rather than submit a wrong-direction or empty ID.
+                [
+                    "outcome": [
+                        "outcome": "cancelled"
+                    ]
                 ]
-            ]
+            }
         case .decline:
             if let optionID = preferredRejectOptionID(for: pending.options) {
                 [
@@ -3396,15 +3402,61 @@ actor ACPAgentSessionController {
         ])
     }
 
-    private func preferredAllowOptionID(for options: [PermissionOption], sessionScoped: Bool) -> String {
+    /// The option an `.accept`-family decision submits, or nil when the agent offered no
+    /// selectable allow option. The denylist-filtered fallback must stay allow-kind:
+    /// without it, a Devin prompt whose only allow-typed entry is a denylisted
+    /// `switch_*`/`plan_*` would collapse to submitting its `reject_once` (or an empty ID)
+    /// for an accept decision — answering the opposite of what was decided.
+    private func preferredAllowOptionID(for options: [PermissionOption], sessionScoped: Bool) -> String? {
         let preferences: [PermissionOptionPreference] = switch provider.providerID {
-        case .openCode, .cursor, .antigravity, .devin:
+        case .openCode, .cursor, .antigravity:
             genericAllowOptionPreferences(sessionScoped: sessionScoped)
+        case .devin:
+            devinAllowOptionPreferences(sessionScoped: sessionScoped)
         case .grokBuild:
             grokBuildAllowOptionPreferences(sessionScoped: sessionScoped)
         }
         let filteredOptions = safePermissionOptionsForAutoSelection(options)
-        return optionID(for: filteredOptions, preferences: preferences) ?? filteredOptions.first?.optionID ?? ""
+        if let matched = optionID(for: filteredOptions, preferences: preferences) {
+            return matched
+        }
+        return filteredOptions.first(where: {
+            guard normalizedPermissionOptionValue($0.kind)?.hasPrefix("allow") == true else {
+                return false
+            }
+            // A session-scoped decision must not silently widen into a persistent grant
+            // when no session/once option was offered.
+            return !(sessionScoped && ACPPermissionOptionPolicy.exceedsSessionScope(
+                optionID: $0.optionID,
+                for: provider.providerID
+            ))
+        })?.optionID
+    }
+
+    /// Devin's allow options are tiered (`allow_once` < `allow_session` < `allow_always` <
+    /// `allow_always_global`). `acceptForSession` therefore prefers the per-tool session
+    /// grant and otherwise falls back to the per-request grant — never `allow_always`,
+    /// which persists beyond the session the decision was scoped to. The mode-switching
+    /// options are unreachable — they are denylisted in `ACPPermissionOptionPolicy`
+    /// because re-flagging a running process would drift the launch-mode reuse key in
+    /// `isCompatibleWith`.
+    private func devinAllowOptionPreferences(sessionScoped: Bool) -> [PermissionOptionPreference] {
+        if sessionScoped {
+            return [
+                .optionID("allow_session"),
+                .optionID("allow_once"),
+                .optionID("allow-once"),
+                .optionID("once"),
+                .kind("allow_once")
+            ]
+        }
+        return [
+            .optionID("allow_once"),
+            .optionID("allow-once"),
+            .optionID("once"),
+            .kind("allow_once"),
+            .optionID("allow_session")
+        ]
     }
 
     private func grokBuildAllowOptionPreferences(sessionScoped: Bool) -> [PermissionOptionPreference] {
@@ -3451,8 +3503,9 @@ actor ACPAgentSessionController {
             return optionID(for: options, preferences: genericAllowOptionPreferences(sessionScoped: true))
         case .openCode, .grokBuild, .antigravity, .devin:
             // Grok full access is provider-native (`grok agent --always-approve stdio`) and
-            // Devin's is a launch-time `--permission-mode`; the controller never
-            // auto-selects permission options for either.
+            // Devin's is a launch-time `--permission-mode`; neither gets a blank-check
+            // full-access selection. Devin still receives per-request RepoPrompt MCP
+            // auto-approval through `autoApprovalSelection`.
             return nil
         }
     }
@@ -3483,15 +3536,14 @@ actor ACPAgentSessionController {
         requestPayload: [String: Any],
         options: [PermissionOption]
     ) -> AutoApprovalSelection? {
-        guard provider.providerID != .devin,
-              let match = MCPIntegrationHelper.repoPromptPermissionAutoApprovalMatch(
-                  requestToolName: requestToolName,
-                  requestPayload: requestPayload
-              ), isStrictACPRepoPromptPermissionMatch(
-                  match,
-                  requestToolName: requestToolName,
-                  requestPayload: requestPayload
-              )
+        guard let match = MCPIntegrationHelper.repoPromptPermissionAutoApprovalMatch(
+            requestToolName: requestToolName,
+            requestPayload: requestPayload
+        ), isStrictACPRepoPromptPermissionMatch(
+            match,
+            requestToolName: requestToolName,
+            requestPayload: requestPayload
+        )
         else {
             return nil
         }
@@ -3507,7 +3559,16 @@ actor ACPAgentSessionController {
                 .kind("allow_once")
             ]
         case .devin:
-            []
+            // Strict RepoPrompt MCP auto-approval is per-request: only Devin's
+            // allow-once options are eligible. `allow_session`/`allow_always`/`switch_*`
+            // broaden beyond the pending call (the mode switches would also drift the
+            // launch-mode reuse key), so they stay user-decided.
+            [
+                .optionID("allow_once"),
+                .optionID("allow-once"),
+                .optionID("once"),
+                .kind("allow_once")
+            ]
         case .grokBuild:
             // Strict RepoPrompt MCP auto-approval is per-request: never select Grok's
             // session-scoped `allow-edits-session` here.
@@ -4232,4 +4293,35 @@ actor ACPAgentSessionController {
     private func diagnose(_ event: DiagnosticEvent) {
         diagnosticSink?(event)
     }
+
+    #if DEBUG
+        /// Test seam for the strict RepoPrompt-MCP auto-approval path: returns the option
+        /// ID the controller would select for a permission request, or nil when it would
+        /// surface the prompt instead. `options` are `(optionID, kind)` pairs in the order
+        /// the agent advertised them.
+        func test_autoApprovalOptionID(
+            requestToolName: String?,
+            requestPayload: [String: Any],
+            options: [(optionID: String, kind: String)]
+        ) -> String? {
+            autoApprovalSelection(
+                requestToolName: requestToolName,
+                requestPayload: requestPayload,
+                options: options.map { PermissionOption(optionID: $0.optionID, kind: $0.kind) }
+            )?.optionID
+        }
+
+        /// Test seam for the user-decision fallback ordering: returns the option ID a
+        /// `.accept`/`.acceptForSession` decision would submit, or nil when no
+        /// selectable allow option remains (the response is sent as `cancelled`).
+        func test_preferredAllowOptionID(
+            options: [(optionID: String, kind: String)],
+            sessionScoped: Bool
+        ) -> String? {
+            preferredAllowOptionID(
+                for: options.map { PermissionOption(optionID: $0.optionID, kind: $0.kind) },
+                sessionScoped: sessionScoped
+            )
+        }
+    #endif
 }

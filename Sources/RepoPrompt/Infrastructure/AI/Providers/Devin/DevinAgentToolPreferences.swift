@@ -42,7 +42,7 @@ enum DevinAgentToolPreferences {
             case .smart:
                 "Starts Devin with `--permission-mode smart`; Devin additionally auto-runs actions a fast model judges safe. Applies to newly started Devin processes."
             case .fullApproval:
-                "Starts Devin with `--permission-mode dangerous`; Devin runs tools without approval prompts. Applies to newly started Devin processes."
+                "Starts Devin with `--permission-mode dangerous`; Devin runs tools without approval prompts. Applies to newly started Devin processes, including unattended headless and one-shot runs that cannot ask."
             }
         }
 
@@ -79,6 +79,21 @@ enum DevinAgentToolPreferences {
                 "smart"
             case .fullApproval:
                 "dangerous"
+            }
+        }
+
+        /// The `--permission-mode` an unattended launch (headless ACP run, one-shot CLI
+        /// call) may use for this configured level. Unattended runs cannot surface
+        /// approval prompts — the headless bridge declines them — so only an explicit
+        /// Full Approval escalates past the managed `auto` floor. Intermediate levels
+        /// like `smart` presume a person answers the residual prompts; mapping them to
+        /// `auto` keeps unattended behavior deterministic.
+        var unattendedCLIPermissionMode: String {
+            switch self {
+            case .fullApproval:
+                "dangerous"
+            case .providerDefault, .normal, .acceptEdits, .smart:
+                "auto"
             }
         }
 
@@ -133,6 +148,16 @@ enum DevinAgentToolPreferences {
             return document.permissionLevel()
         }
         return PermissionLevel.from(rawValue: defaults.string(forKey: permissionLevelKey))
+    }
+
+    /// Resolves the `--permission-mode` for unattended launches from the configured level:
+    /// explicit Full Approval → `dangerous`, everything else → `auto`. See
+    /// `PermissionLevel.unattendedCLIPermissionMode` for the security posture.
+    static func unattendedLaunchPermissionMode(
+        defaults: UserDefaults = .standard,
+        secureStore: AgentPermissionSecureStore? = nil
+    ) -> String {
+        permissionLevel(defaults: defaults, secureStore: secureStore).unattendedCLIPermissionMode
     }
 
     static func setPermissionLevel(
