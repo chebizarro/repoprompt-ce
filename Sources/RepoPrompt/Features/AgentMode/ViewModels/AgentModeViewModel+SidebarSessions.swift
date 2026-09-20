@@ -751,15 +751,14 @@ extension AgentModeViewModel {
             )
 
             let query = AgentSessionSearchQuery.parse(searchTrimmed)
-            let searchFieldsByRowID = sidebarSearchFields(for: sortedSessions)
+            let materializedSearchFields = sidebarSearchFields(for: sortedSessions)
 
             // Collect direct matches and include their ancestor chain so matching
             // child sessions remain visible in threaded context. Do not inject
             // the active session unless it is an actual match; otherwise sidebar
             // search presents false positives for arbitrary queries.
             var matchedIDs = Set<UUID>()
-            for session in sortedSessions {
-                let fields = searchFieldsByRowID[session.id] ?? session.makeSearchFields()
+            for (session, fields) in zip(sortedSessions, materializedSearchFields) {
                 if AgentSessionSearchMatcher.matches(query: query, fields: fields) {
                     matchedIDs.insert(session.id)
                     var cursor = session.parentSessionID
@@ -933,28 +932,56 @@ extension AgentModeViewModel {
     /// Materializes normalized search fields for `rows`, reusing previously
     /// materialized values whose source inputs are unchanged.
     ///
+    /// Returns one entry per element of `rows`, positionally aligned, so callers
+    /// index the result by position rather than by row id. That keeps the lookup
+    /// total: there is no missing-key case, and therefore no uncounted fallback
+    /// that could bypass the memo and under-report the materialization counter.
+    ///
     /// The memo is owned by this view model (main actor) and is replaced by the
     /// current row set on every call, so it cannot outgrow the visible sidebar or
     /// retain fields for rows that no longer exist.
-    func sidebarSearchFields(for rows: [SidebarSession]) -> [UUID: AgentSessionSearchFields] {
+    func sidebarSearchFields(for rows: [SidebarSession]) -> [AgentSessionSearchFields] {
+        #if DEBUG
+            let startMS = AgentModePerfDiagnostics.timestampMSIfEnabled()
+        #endif
         var refreshed: [UUID: (source: AgentSessionSearchFieldSource, fields: AgentSessionSearchFields)] = [:]
         refreshed.reserveCapacity(rows.count)
-        var result: [UUID: AgentSessionSearchFields] = [:]
+        var result: [AgentSessionSearchFields] = []
         result.reserveCapacity(rows.count)
+        var materializedCount = 0
         for row in rows {
             if let cached = sidebarSearchFieldsMemo[row.id], cached.source == row.searchFieldSource {
                 refreshed[row.id] = cached
-                result[row.id] = cached.fields
+                result.append(cached.fields)
                 continue
             }
             let fields = row.makeSearchFields()
+            materializedCount += 1
             #if DEBUG
                 test_sidebarSearchFieldsMaterializationCount &+= 1
             #endif
             refreshed[row.id] = (row.searchFieldSource, fields)
-            result[row.id] = fields
+            result.append(fields)
         }
         sidebarSearchFieldsMemo = refreshed
+        #if DEBUG
+            // Emitted only on the active-search path. Absence of this event while
+            // the sidebar is in use is the live signal that an inactive search box
+            // normalized nothing. Counts only — no titles, paths, or ids.
+            AgentModePerfDiagnostics.increment(
+                "sidebar.searchFields.materialized",
+                by: materializedCount
+            )
+            AgentModePerfDiagnostics.durationEvent(
+                "sidebar.searchFieldsMaterialize",
+                startMS: startMS,
+                fields: [
+                    "rowCount": String(rows.count),
+                    "materializedCount": String(materializedCount),
+                    "reusedCount": String(rows.count - materializedCount)
+                ]
+            )
+        #endif
         return result
     }
 

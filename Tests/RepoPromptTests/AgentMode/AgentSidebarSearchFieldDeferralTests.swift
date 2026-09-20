@@ -91,8 +91,16 @@ final class AgentSidebarSearchFieldDeferralTests: XCTestCase {
         let viewModel = makeViewModel()
         let rows = (1 ... 3).map { row(tabID: id($0), title: "Session \($0)") }
 
-        _ = viewModel.sidebarSearchFields(for: rows)
+        let first = viewModel.sidebarSearchFields(for: rows)
         XCTAssertEqual(viewModel.test_sidebarSearchFieldsMaterializationCount, 3)
+
+        // The result is positionally aligned with the input rows, which is what
+        // makes the caller's lookup total and keeps every materialization counted.
+        XCTAssertEqual(first.count, rows.count)
+        XCTAssertEqual(
+            first.map { $0.fields.first?.normalizedText },
+            rows.map { $0.makeSearchFields().fields.first?.normalizedText }
+        )
 
         // Identical sources must not re-normalize.
         _ = viewModel.sidebarSearchFields(for: rows)
@@ -165,6 +173,66 @@ final class AgentSidebarSearchFieldDeferralTests: XCTestCase {
 
         XCTAssertEqual(viewModel.test_sidebarListProjectionBuildCount, 2, "projection must re-run")
         XCTAssertEqual(viewModel.test_sidebarSessionRowsBuildCount, 1, "rows must not rebuild")
+    }
+
+    /// `observeSidebarRunStateTransition` relies on `clearRunStateAttention`
+    /// having published something: when the clear publishes, it deliberately does
+    /// *not* call `syncSidebarUIState(refresh:reason:)`. Before this change the
+    /// clear also bumped `rowContentRevision`, so the sidebar happened to update
+    /// via a full row rebuild. Now the clear is presentation-only, so this proves
+    /// the transition still reaches the sidebar through re-projection alone.
+    func testRunningTransitionClearingAttentionUpdatesSidebarWithoutRebuildingRows() {
+        let viewModel = makeViewModel()
+        let tabs = (1 ... 3).map { ComposeTabState(id: id($0), name: "Session \($0)") }
+        let store = viewModel.ui.sessionSidebar
+        let backgroundTabID = id(2)
+        let session = AgentModeViewModel.TabSession(tabID: backgroundTabID)
+
+        // Seed the observed run state so the first real transition is not swallowed.
+        session.runState = .idle
+        viewModel.observeSidebarRunStateTransition(for: session)
+
+        // A background completion raises an unseen-attention badge.
+        session.runState = .completed
+        viewModel.observeSidebarRunStateTransition(for: session)
+        XCTAssertEqual(store.attentionRunState(for: backgroundTabID), .completed)
+
+        _ = projection(viewModel, tabs: tabs, snapshot: store.snapshot)
+        let rowBuildsAfterBaseline = viewModel.test_sidebarSessionRowsBuildCount
+        let projectionBuildsAfterBaseline = viewModel.test_sidebarListProjectionBuildCount
+        let revisionBeforeClear = store.snapshot.revision
+        XCTAssertEqual(store.snapshot.rowContentRevision, 0)
+
+        // Resuming the run supersedes the stale badge.
+        session.runState = .running
+        viewModel.observeSidebarRunStateTransition(for: session)
+
+        XCTAssertNil(
+            store.attentionRunState(for: backgroundTabID),
+            "resuming a run must clear the stale completion badge"
+        )
+        XCTAssertGreaterThan(
+            store.snapshot.revision,
+            revisionBeforeClear,
+            "the clear must publish so the sidebar re-projects"
+        )
+        XCTAssertEqual(
+            store.snapshot.rowContentRevision,
+            0,
+            "clearing attention must not force a row rebuild"
+        )
+
+        _ = projection(viewModel, tabs: tabs, snapshot: store.snapshot)
+        XCTAssertEqual(
+            viewModel.test_sidebarListProjectionBuildCount,
+            projectionBuildsAfterBaseline + 1,
+            "the cleared badge must reach the sidebar through re-projection"
+        )
+        XCTAssertEqual(
+            viewModel.test_sidebarSessionRowsBuildCount,
+            rowBuildsAfterBaseline,
+            "rows must not rebuild for an attention-only transition"
+        )
     }
 
     func testForcedSidebarRefreshRebuildsRows() {

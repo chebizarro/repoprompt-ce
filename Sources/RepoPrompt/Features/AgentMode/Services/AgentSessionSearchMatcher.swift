@@ -137,9 +137,22 @@ struct AgentSessionSearchFields: Equatable {
 /// search fields on the non-empty-query branch).
 ///
 /// Constructing a source is allocation-free: every stored property is a retain of
-/// a value the row builder already computed. Equality covers exactly the inputs
-/// that previously fed `AgentSessionSearchFields`, so row equality semantics are
-/// preserved even though the normalized payload is no longer stored.
+/// a value the row builder already computed.
+///
+/// Equality is intentionally *stricter* than the normalized output it replaces,
+/// not identical to it. Normalization is lossy in two ways: `searchFields(source:)`
+/// reads only some members of the worktree/merge summaries it is given (a summary
+/// whose `updatedAt`, `status`, or `conflictFileCount` changed produces byte-identical
+/// fields), and `AgentSessionSearchFields.init` drops fields that normalize to
+/// empty (so `nil` and `""` inputs collapse together). Comparing sources therefore
+/// reports "changed" in a few cases where comparing normalized fields reported
+/// "unchanged".
+///
+/// That direction is the safe one: a row can be considered unequal when its
+/// rendered content is in fact identical, which costs at most a redundant view
+/// diff or search-field re-materialization. It can never report a row as equal
+/// after its search-relevant inputs changed, so search results and row identity
+/// cannot go stale.
 struct AgentSessionSearchFieldSource: Equatable {
     static let empty = AgentSessionSearchFieldSource()
 
