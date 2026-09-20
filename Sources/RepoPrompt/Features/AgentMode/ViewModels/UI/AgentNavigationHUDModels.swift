@@ -212,7 +212,7 @@ enum AgentNavigationHUDSnapshotBuilder {
             let attentionState = attentionRunStateByTabID[row.tabID]
             let mergeLabel = row.worktreeMergeAttention?.targetLabel
             let searchFields = AgentSessionSearchFields(
-                fields: row.searchFields.fields + AgentSessionSearchFields(
+                fields: row.makeSearchFields().fields + AgentSessionSearchFields(
                     title: nil,
                     primary: [workspaceTitle, windowTitle],
                     status: [attentionState?.searchLabel, runState?.searchLabel, mergeLabel == nil ? nil : "merge"],

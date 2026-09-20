@@ -884,6 +884,10 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     var sidebarSessionRowsCache: (key: SidebarSessionRowsCacheKey, rows: [SidebarSession])?
     var agentChatsSidebarRowsCache: (key: SidebarSessionRowsCacheKey, rows: [SidebarSession])?
     var sidebarListProjectionCache: (key: SidebarListProjectionCacheKey, projection: SidebarListProjection)?
+    /// Memoized normalized search fields, keyed by sidebar row id. Populated only
+    /// while a sidebar search query is active and replaced by the current row set
+    /// on each call, so it stays bounded by the visible sidebar.
+    var sidebarSearchFieldsMemo: [UUID: (source: AgentSessionSearchFieldSource, fields: AgentSessionSearchFields)] = [:]
     private var lastKnownWorkspaceSnapshot: WorkspaceModel?
     var sidebarRuntimeWorkspaceID: UUID? {
         lastKnownWorkspaceSnapshot?.id
@@ -900,6 +904,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         private var test_persistentBindingResolutionSnapshotBuildCount = 0
         var test_sidebarSessionRowsBuildCount = 0
         var test_sidebarListProjectionBuildCount = 0
+        /// Counts rows whose normalized search fields were actually materialized.
+        /// Stays at zero while the sidebar search box is empty.
+        var test_sidebarSearchFieldsMaterializationCount = 0
         private var test_afterMCPStoreEpochBegan: (@MainActor () async -> Void)?
         private var test_afterDurableChildTabCreation: (@MainActor () async -> Void)?
         /// Runs on the `@MainActor` inside `agentSessionLinkTranscriptPage(...)`, after the page has

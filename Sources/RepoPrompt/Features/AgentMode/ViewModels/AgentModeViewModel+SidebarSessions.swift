@@ -751,6 +751,7 @@ extension AgentModeViewModel {
             )
 
             let query = AgentSessionSearchQuery.parse(searchTrimmed)
+            let searchFieldsByRowID = sidebarSearchFields(for: sortedSessions)
 
             // Collect direct matches and include their ancestor chain so matching
             // child sessions remain visible in threaded context. Do not inject
@@ -758,7 +759,8 @@ extension AgentModeViewModel {
             // search presents false positives for arbitrary queries.
             var matchedIDs = Set<UUID>()
             for session in sortedSessions {
-                if AgentSessionSearchMatcher.matches(query: query, fields: session.searchFields) {
+                let fields = searchFieldsByRowID[session.id] ?? session.makeSearchFields()
+                if AgentSessionSearchMatcher.matches(query: query, fields: fields) {
                     matchedIDs.insert(session.id)
                     var cursor = session.parentSessionID
                     var visitedSessionIDs: Set<UUID> = []
@@ -928,6 +930,34 @@ extension AgentModeViewModel {
         return displayedRows
     }
 
+    /// Materializes normalized search fields for `rows`, reusing previously
+    /// materialized values whose source inputs are unchanged.
+    ///
+    /// The memo is owned by this view model (main actor) and is replaced by the
+    /// current row set on every call, so it cannot outgrow the visible sidebar or
+    /// retain fields for rows that no longer exist.
+    func sidebarSearchFields(for rows: [SidebarSession]) -> [UUID: AgentSessionSearchFields] {
+        var refreshed: [UUID: (source: AgentSessionSearchFieldSource, fields: AgentSessionSearchFields)] = [:]
+        refreshed.reserveCapacity(rows.count)
+        var result: [UUID: AgentSessionSearchFields] = [:]
+        result.reserveCapacity(rows.count)
+        for row in rows {
+            if let cached = sidebarSearchFieldsMemo[row.id], cached.source == row.searchFieldSource {
+                refreshed[row.id] = cached
+                result[row.id] = cached.fields
+                continue
+            }
+            let fields = row.makeSearchFields()
+            #if DEBUG
+                test_sidebarSearchFieldsMaterializationCount &+= 1
+            #endif
+            refreshed[row.id] = (row.searchFieldSource, fields)
+            result[row.id] = fields
+        }
+        sidebarSearchFieldsMemo = refreshed
+        return result
+    }
+
     private func sidebarThreadActivityDate(for row: SidebarSession) -> Date {
         row.lastUserMessageAt ?? row.activityDate
     }
@@ -961,7 +991,7 @@ extension AgentModeViewModel {
             hiddenThreadDescendantCount: hiddenThreadDescendantCount,
             hiddenThreadDescendantAttentionCount: hiddenThreadDescendantAttentionCount,
             threadActivityDate: threadActivityDate,
-            searchFields: row.searchFields
+            searchFieldSource: row.searchFieldSource
         )
     }
 

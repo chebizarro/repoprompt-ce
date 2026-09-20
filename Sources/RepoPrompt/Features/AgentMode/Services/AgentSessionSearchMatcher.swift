@@ -126,6 +126,42 @@ struct AgentSessionSearchFields: Equatable {
     }
 }
 
+/// Raw, un-normalized inputs required to materialize `AgentSessionSearchFields`
+/// for one sidebar row.
+///
+/// Sidebar rows capture this source instead of the normalized fields because
+/// `AgentSessionSearchNormalizer.normalize(_:)` performs ICU case/diacritic/width
+/// folding per field, and a row carries ~25-40 fields. Materializing during every
+/// projection rebuild spent that cost on values no consumer reads while the
+/// sidebar search box is empty (see `filteredSidebarSessions`, which only touches
+/// search fields on the non-empty-query branch).
+///
+/// Constructing a source is allocation-free: every stored property is a retain of
+/// a value the row builder already computed. Equality covers exactly the inputs
+/// that previously fed `AgentSessionSearchFields`, so row equality semantics are
+/// preserved even though the normalized payload is no longer stored.
+struct AgentSessionSearchFieldSource: Equatable {
+    static let empty = AgentSessionSearchFieldSource()
+
+    var title: String = ""
+    var runState: AgentSessionRunState?
+    var isMCPControlled: Bool = false
+    var worktree: AgentWorktreeIndicator?
+    var mergeAttention: AgentWorktreeMergeAttention?
+    var sessionID: UUID?
+    var tabID: UUID?
+    var entryID: UUID?
+    var entryParentSessionID: UUID?
+    var lastRunStateRaw: String?
+    var agentKindRaw: String?
+    var agentModelRaw: String?
+    var agentReasoningEffortRaw: String?
+    var autoEditEnabled: Bool = false
+    var hasUnknownConversationContent: Bool = false
+    var worktreeBindingSummaries: [AgentSessionWorktreeBindingSummary] = []
+    var activeWorktreeMergeSummaries: [AgentSessionWorktreeMergeSummary] = []
+}
+
 struct AgentSessionSearchScore: Comparable, Equatable {
     let value: Int
 
