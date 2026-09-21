@@ -109,7 +109,7 @@ struct RuntimeSecureStorageDecision: Equatable {
 
 enum RuntimeCodeSigningPolicy {
     static let developerIDBundleIdentifier = "com.pvncher.repoprompt.ce"
-    static let appleDevelopmentDebugBundleIdentifier = "com.pvncher.repoprompt.ce.debug"
+    static let appleDevelopmentDebugBundleIdentifier = "com.repoprompt.ce.debug"
     static let signingTeamIdentifier = "648A27MST5"
     static let successorDeveloperIDBundleIdentifier = "com.repoprompt.ce"
     static let successorSigningTeamIdentifier = "69N6K965SF"

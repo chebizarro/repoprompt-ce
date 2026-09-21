@@ -110,7 +110,7 @@ struct JevRoutingClient: JevRoutingClientProtocol {
         timeout: Duration
     ) throws -> URLRequest {
         guard let url = URL(string: path, relativeTo: Self.baseURL) else { throw JevRoutingClientError.invalidResponse }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         request.httpMethod = method
         request.httpBody = body
         request.timeoutInterval = max(0.001, timeout.secondsValue)

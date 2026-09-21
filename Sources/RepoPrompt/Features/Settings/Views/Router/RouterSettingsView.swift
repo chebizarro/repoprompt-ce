@@ -255,8 +255,11 @@ struct RouterSettingsView: View {
     private var credentialActions: some View {
         Button("Validate & Save") {
             let secret = candidateSecret
-            candidateSecret = ""
-            Task { await viewModel.performBackendAction(.validateAndSaveSecret(secret)) }
+            Task {
+                if await viewModel.performBackendAction(.validateAndSaveSecret(secret)) {
+                    candidateSecret = ""
+                }
+            }
         }
         .disabled(candidateSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isPerformingBackendOperation)
         Button("Verify Saved Key") {

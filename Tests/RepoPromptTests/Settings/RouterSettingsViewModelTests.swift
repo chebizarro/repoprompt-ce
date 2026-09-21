@@ -47,12 +47,24 @@ final class RouterSettingsViewModelTests: XCTestCase {
         let fixture = try makeFixture(settingsController: controller)
         await fixture.viewModel.refresh()
 
-        await fixture.viewModel.performBackendAction(.revalidateStoredSecret)
+        let succeeded = await fixture.viewModel.performBackendAction(.revalidateStoredSecret)
 
+        XCTAssertTrue(succeeded)
         XCTAssertEqual(
             fixture.viewModel.backendOperationFeedback,
             .succeeded("Key verified. Jev is ready.")
         )
+    }
+
+    func testFailedBackendActionReturnsFalseAndPublishesFeedback() async throws {
+        let controller = SettingsTestController(result: .failed("Authentication failed."))
+        let fixture = try makeFixture(settingsController: controller)
+        await fixture.viewModel.refresh()
+
+        let succeeded = await fixture.viewModel.performBackendAction(.validateAndSaveSecret("candidate"))
+
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(fixture.viewModel.backendOperationFeedback, .failed("Authentication failed."))
     }
 
     func testUnavailableSettingsControllerClearsBackendOperationProgress() async throws {

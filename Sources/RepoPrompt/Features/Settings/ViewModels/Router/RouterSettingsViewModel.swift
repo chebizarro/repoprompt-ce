@@ -189,9 +189,10 @@ final class RouterSettingsViewModel: ObservableObject {
         scheduleRefresh()
     }
 
-    func performBackendAction(_ action: AgentTaskRouterBackendSettingsAction) async {
+    @discardableResult
+    func performBackendAction(_ action: AgentTaskRouterBackendSettingsAction) async -> Bool {
         guard !isPerformingBackendOperation,
-              let id = settingsStore.modelRouterConfiguration().selectedBackendID else { return }
+              let id = settingsStore.modelRouterConfiguration().selectedBackendID else { return false }
         isPerformingBackendOperation = true
         defer {
             isPerformingBackendOperation = false
@@ -206,14 +207,16 @@ final class RouterSettingsViewModel: ObservableObject {
         }
         backendOperationFeedback = .running(progressMessage)
         guard let controller = await runtime.registry.registration(for: id)?.settings?.controller,
-              settingsStore.modelRouterConfiguration().selectedBackendID == id else { return }
+              settingsStore.modelRouterConfiguration().selectedBackendID == id else { return false }
         let result = await controller.perform(action)
-        guard settingsStore.modelRouterConfiguration().selectedBackendID == id else { return }
+        guard settingsStore.modelRouterConfiguration().selectedBackendID == id else { return false }
         backendOperationFeedback = switch result {
         case let .succeeded(message): .succeeded(message)
         case let .missingSecret(message), let .superseded(message), let .failed(message): .failed(message)
         }
         await refresh()
+        if case .succeeded = result { return true }
+        return false
     }
 
     func refresh() async {

@@ -304,7 +304,7 @@ final class RuntimeCodeSigningPolicyTests: XCTestCase {
 
     func testCompileTimeTrustAnchorsIncludeExpectedCertificateClasses() {
         XCTAssertEqual(RuntimeCodeSigningPolicy.developerIDBundleIdentifier, "com.pvncher.repoprompt.ce")
-        XCTAssertEqual(RuntimeCodeSigningPolicy.appleDevelopmentDebugBundleIdentifier, "com.pvncher.repoprompt.ce.debug")
+        XCTAssertEqual(RuntimeCodeSigningPolicy.appleDevelopmentDebugBundleIdentifier, "com.repoprompt.ce.debug")
         XCTAssertEqual(RuntimeCodeSigningPolicy.signingTeamIdentifier, "648A27MST5")
         XCTAssertEqual(RuntimeCodeSigningPolicy.successorDeveloperIDBundleIdentifier, "com.repoprompt.ce")
         XCTAssertEqual(RuntimeCodeSigningPolicy.successorSigningTeamIdentifier, "69N6K965SF")

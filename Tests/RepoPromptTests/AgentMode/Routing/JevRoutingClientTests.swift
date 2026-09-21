@@ -10,6 +10,7 @@ final class JevRoutingClientTests: XCTestCase {
         let request = try XCTUnwrap(transport.lastRequest)
         XCTAssertEqual(request.url?.absoluteString, "https://api.typesafe.ai/v1/models")
         XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
         XCTAssertEqual(request.timeoutInterval, 5, accuracy: 0.001)
     }
