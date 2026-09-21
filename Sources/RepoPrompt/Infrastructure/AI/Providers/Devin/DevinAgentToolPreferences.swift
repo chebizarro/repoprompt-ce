@@ -97,6 +97,30 @@ enum DevinAgentToolPreferences {
             }
         }
 
+        /// The ACP session mode for this level, or nil when Devin advertises no equivalent.
+        ///
+        /// `--permission-mode` is a top-level flag that the `acp` subcommand does not consume:
+        /// a session started as `devin --permission-mode dangerous acp` reports
+        /// `mode.currentValue == "accept-edits"`, identical to launching with no flag at all.
+        /// The mode has to be set over ACP instead, which is how every other ACP provider here
+        /// already does it. Values are the ones Devin advertises in its `mode` config option:
+        /// `accept-edits`, `smart`, `ask`, `plan`, `bypass`.
+        ///
+        /// `normal` and `providerDefault` stay nil deliberately: Devin's ACP mode vocabulary has
+        /// no `normal`/`auto` member, so there is nothing to map them to without guessing.
+        var sessionModeID: String? {
+            switch self {
+            case .providerDefault, .normal:
+                nil
+            case .acceptEdits:
+                "accept-edits"
+            case .smart:
+                "smart"
+            case .fullApproval:
+                "bypass"
+            }
+        }
+
         var launchArguments: [String] {
             guard let mode = cliPermissionMode else { return [] }
             return [DevinAgentToolPreferences.permissionModeArgumentName, mode]

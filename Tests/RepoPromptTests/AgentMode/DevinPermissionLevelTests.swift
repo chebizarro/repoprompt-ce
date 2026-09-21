@@ -81,6 +81,81 @@ final class DevinPermissionLevelTests: XCTestCase {
 
     // MARK: - Snapshot store
 
+    /// Devin's `acp` subcommand does not consume the top-level `--permission-mode` flag.
+    /// Probing the installed CLI 3000.11.1 directly, `devin --permission-mode dangerous acp`
+    /// reports `mode.currentValue == "accept-edits"` — byte-identical to `devin acp` with no
+    /// flag — so Full Approval never reached the agent. The level has to travel as an ACP
+    /// session mode, the way every other ACP provider already sends it.
+    @MainActor
+    func testFullApprovalCarriesTheBypassSessionModeBecauseTheLaunchFlagIsIgnored() throws {
+        let (store, _) = try makeStore(
+            securePermissions: AgentPermissionSecureStore(
+                secureStrings: DevinPermissionFakeSecureStringStore(),
+                notificationCenter: NotificationCenter()
+            )
+        )
+
+        store.setPermissionLevel(.devin(.fullApproval))
+        let binding = store.runtimePermission(for: .devin, profile: .userConfigured)
+
+        XCTAssertEqual(
+            binding.acpSessionModeID,
+            "bypass",
+            "Full Approval must be carried over ACP; the launch flag is ignored by `devin acp`."
+        )
+        // The flag is still emitted because the one-shot CLI path does honour it.
+        XCTAssertEqual(binding.acpLaunchPermissionMode, "dangerous")
+    }
+
+    @MainActor
+    func testSessionModeIsOnlySentForLevelsDevinActuallyAdvertises() throws {
+        let (store, _) = try makeStore(
+            securePermissions: AgentPermissionSecureStore(
+                secureStrings: DevinPermissionFakeSecureStringStore(),
+                notificationCenter: NotificationCenter()
+            )
+        )
+
+        // Devin advertises exactly: accept-edits, smart, ask, plan, bypass.
+        store.setPermissionLevel(.devin(.acceptEdits))
+        XCTAssertEqual(store.runtimePermission(for: .devin, profile: .userConfigured).acpSessionModeID, "accept-edits")
+        store.setPermissionLevel(.devin(.smart))
+        XCTAssertEqual(store.runtimePermission(for: .devin, profile: .userConfigured).acpSessionModeID, "smart")
+
+        // Negative twins: there is no `normal`/`auto` member in that vocabulary, so these stay
+        // nil rather than being mapped to a guess that would silently change the level.
+        store.setPermissionLevel(.devin(.normal))
+        XCTAssertNil(store.runtimePermission(for: .devin, profile: .userConfigured).acpSessionModeID)
+        store.setPermissionLevel(.devin(.providerDefault))
+        XCTAssertNil(store.runtimePermission(for: .devin, profile: .userConfigured).acpSessionModeID)
+    }
+
+    /// The Safe Managed floor must not be escalated by the new mode channel.
+    @MainActor
+    func testManagedProfilesDoNotReceiveTheBypassSessionMode() throws {
+        let (store, _) = try makeStore(
+            securePermissions: AgentPermissionSecureStore(
+                secureStrings: DevinPermissionFakeSecureStringStore(),
+                notificationCenter: NotificationCenter()
+            )
+        )
+        store.setPermissionLevel(.devin(.fullApproval))
+
+        for profile in [
+            AgentProviderPermissionProfile.mcpSafeDefaults,
+            .providerOverride(.grokBuild(.fullAccess))
+        ] {
+            let binding = store.runtimePermission(for: .devin, profile: profile)
+            // The managed floor is Normal, which has no ACP mode equivalent, so nothing is
+            // sent. Asserting nil rather than "not bypass" states what is actually true --
+            // "not bypass" would also pass for any other mapping.
+            XCTAssertNil(
+                binding.acpSessionModeID,
+                "A managed profile must never inherit Full Approval's bypass mode."
+            )
+        }
+    }
+
     @MainActor
     func testRuntimeBindingCarriesTheLaunchPermissionModeForEachProfile() throws {
         let (store, _) = try makeStore()
@@ -111,8 +186,12 @@ final class DevinPermissionLevelTests: XCTestCase {
         // only settles a prompt that is already pending when the level escalates.
         for binding in [configured, override] {
             XCTAssertFalse(binding.autoApproveAllACPToolPermissions)
-            XCTAssertNil(binding.acpSessionModeID)
         }
+        // The level now also travels as an ACP session mode. This assertion previously
+        // required it to be nil, which encoded the assumption that `--permission-mode`
+        // carried the level -- an assumption the `acp` subcommand does not honour.
+        XCTAssertEqual(configured.acpSessionModeID, "accept-edits")
+        XCTAssertEqual(override.acpSessionModeID, "bypass")
         XCTAssertFalse(configured.acceptsPendingACPApprovalWhenActivated)
         XCTAssertTrue(override.acceptsPendingACPApprovalWhenActivated)
     }
