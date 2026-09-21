@@ -287,6 +287,9 @@ final class AgentTaskRouterCoreTests: XCTestCase {
         let request = await client.lastRequest
         XCTAssertEqual(request?.model, JevRouterCredentialService.pinnedModel)
         XCTAssertEqual(request?.state, "HIGHEST-PRIORITY USER ROUTING DIRECTIVE:\nPrefer b.\n\nTASK:\ntask")
+        // The shipped routing policy stays one choice question per decision.
+        XCTAssertEqual(request?.questions.count, 1)
+        XCTAssertEqual(request?.questions["route"]?.type, "choice")
         XCTAssertEqual(request?.questions["route"]?.criteria, [
             "a": "Provider: Test; model: a. Suitable work: rubric",
             "b": "Provider: Test; model: b. Suitable work: rubric"
