@@ -105,7 +105,7 @@ struct AgentSessionMetadataRecord: Codable, Equatable, Identifiable {
 
     /// True when this record carries no transcript-derived fields, i.e. it was built from a
     /// transcript-less stub during a cheap `rebuildMetadataIndex` pass. The history tool uses this to
-    /// decide which records need on-demand enrichment: any populated v5 field implies a real
+    /// decide which records need on-demand enrichment: any populated transcript-derived field implies a real
     /// transcript was already seen (the save/load path), so the record is passed through unchanged.
     ///
     /// Maintenance: any new transcript-derived field must be added to this check, or a stub-built
@@ -456,7 +456,7 @@ struct AgentSessionMetadataRecord: Codable, Equatable, Identifiable {
         return collected
     }
 
-    /// Return a copy with the transcript-derived v5 fields (activity bounds, keyPaths, toolCount,
+    /// Return a copy with the transcript-derived fields (activity bounds, keyPaths, toolCount,
     /// duration primitives) recomputed from `turns`. The `history` tool calls this to enrich index
     /// records that were rebuilt from lightweight stubs (`firstActivityAt == nil`) on demand, so the
     /// shared `rebuildMetadataIndex` path — which feeds the agent-mode sidebar and workspace restore —

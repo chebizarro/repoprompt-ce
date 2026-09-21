@@ -86,7 +86,7 @@ This spec proposes a new MCP tool group — **`history`** — that queries past 
 - **Then** that session's `active_duration_seconds` is 5400; at the settings-backed default idle threshold (currently 10 minutes) it would be 6300
 
 ### Scenario: Zero-turn session contributes zero duration
-- **Given** a session with no turn-active intervals that otherwise matches the query filters
+- **Given** a session with no provider-response intervals or activity observations that otherwise matches the query filters
 - **When** `history.list_sessions` or `history.time` runs
 - **Then** the session's `active_duration_seconds` is 0, it has no idle gaps, and it is included per the non-duration filters
 
