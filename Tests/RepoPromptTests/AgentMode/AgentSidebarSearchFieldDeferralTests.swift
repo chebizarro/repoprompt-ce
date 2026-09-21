@@ -120,6 +120,28 @@ final class AgentSidebarSearchFieldDeferralTests: XCTestCase {
         XCTAssertEqual(viewModel.test_sidebarSearchFieldsMaterializationCount, 6)
     }
 
+    func testDeactivatingSearchReleasesMemoizedFields() {
+        let viewModel = makeViewModel()
+        let tabs = (1 ... 3).map { ComposeTabState(id: id($0), name: "Session \($0)") }
+
+        viewModel.setSessionSidebarSearchText("session")
+        _ = projection(viewModel, tabs: tabs, snapshot: viewModel.ui.sessionSidebar.snapshot)
+        XCTAssertEqual(viewModel.test_sidebarSearchFieldsMaterializationCount, 3)
+        XCTAssertEqual(viewModel.sidebarSearchFieldsMemo.count, 3)
+
+        viewModel.clearSessionSidebarSearchText()
+        _ = projection(viewModel, tabs: tabs, snapshot: viewModel.ui.sessionSidebar.snapshot)
+        XCTAssertTrue(viewModel.sidebarSearchFieldsMemo.isEmpty)
+
+        viewModel.setSessionSidebarSearchText("session")
+        _ = projection(viewModel, tabs: tabs, snapshot: viewModel.ui.sessionSidebar.snapshot)
+        XCTAssertEqual(
+            viewModel.test_sidebarSearchFieldsMaterializationCount,
+            6,
+            "reactivating search should rematerialize fields released while inactive"
+        )
+    }
+
     // MARK: - Restore publication batching
 
     func testRestoreBatchSizePublishesPreferredRowsOnceAfterPrioritizedActiveTab() {
@@ -215,7 +237,7 @@ final class AgentSidebarSearchFieldDeferralTests: XCTestCase {
         let rowBuildsAfterBaseline = viewModel.test_sidebarSessionRowsBuildCount
         let projectionBuildsAfterBaseline = viewModel.test_sidebarListProjectionBuildCount
         let revisionBeforeClear = store.snapshot.revision
-        XCTAssertEqual(store.snapshot.rowContentRevision, 0)
+        let rowContentRevisionBeforeClear = store.snapshot.rowContentRevision
 
         // Resuming the run supersedes the stale badge.
         session.runState = .running
@@ -232,8 +254,8 @@ final class AgentSidebarSearchFieldDeferralTests: XCTestCase {
         )
         XCTAssertEqual(
             store.snapshot.rowContentRevision,
-            0,
-            "clearing attention must not force a row rebuild"
+            rowContentRevisionBeforeClear,
+            "the duplicate content fingerprint must not force another row rebuild"
         )
 
         _ = projection(viewModel, tabs: tabs, snapshot: store.snapshot)
@@ -245,8 +267,45 @@ final class AgentSidebarSearchFieldDeferralTests: XCTestCase {
         XCTAssertEqual(
             viewModel.test_sidebarSessionRowsBuildCount,
             rowBuildsAfterBaseline,
-            "rows must not rebuild for an attention-only transition"
+            "a duplicate content fingerprint must not rebuild rows for an attention-only transition"
         )
+    }
+
+    func testBackgroundWaitingTransitionRefreshesCachedSearchFields() {
+        let viewModel = makeViewModel()
+        var tabs = (1 ... 3).map { ComposeTabState(id: id($0), name: "Session \($0)") }
+        let backgroundTabID = id(2)
+        tabs[1].activeAgentSessionID = id(500)
+        let session = AgentModeViewModel.TabSession(tabID: backgroundTabID)
+        session.runState = .running
+        session.hasLoadedPersistedState = true
+        XCTAssertNotNil(viewModel.test_installPersistentSessionBinding(sessionID: id(500), on: session))
+        viewModel.test_installLiveSession(session)
+
+        // Seed both transition observation and the content fingerprint while
+        // the background session is running.
+        viewModel.observeSidebarRunStateTransition(for: session)
+        viewModel.syncSidebarUIState(refresh: true, reason: .runState, sidebarTabs: tabs)
+        viewModel.setSessionSidebarSearchText("approval")
+
+        let before = projection(viewModel, tabs: tabs, snapshot: viewModel.ui.sessionSidebar.snapshot)
+        XCTAssertFalse(before.filteredSessions.contains { $0.tabID == backgroundTabID })
+        let rowBuildsBeforeTransition = viewModel.test_sidebarSessionRowsBuildCount
+        let rowContentRevisionBeforeTransition = viewModel.ui.sessionSidebar.snapshot.rowContentRevision
+
+        // The tab remains active across this transition, so tabsWithActiveAgentRun
+        // does not change. The transition observer must still refresh the row's
+        // cached run-state search source.
+        session.runState = .waitingForApproval
+        viewModel.observeSidebarRunStateTransition(for: session)
+
+        XCTAssertGreaterThan(
+            viewModel.ui.sessionSidebar.snapshot.rowContentRevision,
+            rowContentRevisionBeforeTransition
+        )
+        let after = projection(viewModel, tabs: tabs, snapshot: viewModel.ui.sessionSidebar.snapshot)
+        XCTAssertTrue(after.filteredSessions.contains { $0.tabID == backgroundTabID })
+        XCTAssertEqual(viewModel.test_sidebarSessionRowsBuildCount, rowBuildsBeforeTransition + 1)
     }
 
     func testForcedSidebarRefreshRebuildsRows() {
@@ -275,7 +334,7 @@ final class AgentSidebarSearchFieldDeferralTests: XCTestCase {
         snapshot: AgentSessionSidebarSnapshot
     ) -> AgentModeViewModel.SidebarListProjection {
         viewModel.sidebarListProjection(
-            workspaceID: id(900),
+            workspaceID: nil,
             composeTabs: tabs,
             stashedTabs: [],
             currentTabID: tabs.first?.id,

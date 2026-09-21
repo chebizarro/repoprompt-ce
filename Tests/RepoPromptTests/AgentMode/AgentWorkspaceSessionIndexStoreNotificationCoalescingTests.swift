@@ -2,7 +2,7 @@
 import XCTest
 
 @MainActor
-final class AgentWorkspaceSessionIndexStorePerformanceTests: XCTestCase {
+final class AgentWorkspaceSessionIndexStoreNotificationCoalescingTests: XCTestCase {
     func testCombinedIndexAndSortDateReplacementNotifiesOnceAfterBothValuesSettle() {
         let workspaceID = id(1)
         let tabID = id(2)

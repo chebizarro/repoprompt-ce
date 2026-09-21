@@ -734,6 +734,10 @@ extension AgentModeViewModel {
         let searchTrimmed = effectiveSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let result: [SidebarSession]
         if searchTrimmed.isEmpty {
+            // Search normalization is demand-driven. Release the last active
+            // query's materialized fields when search deactivates so a large
+            // workspace does not retain them indefinitely.
+            sidebarSearchFieldsMemo.removeAll(keepingCapacity: true)
             result = sidebarRowsApplyingThreadCollapse(
                 sortedSessions,
                 currentTabID: currentTabID,
