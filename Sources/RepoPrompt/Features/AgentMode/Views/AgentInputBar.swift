@@ -16,6 +16,7 @@ struct AgentComposerActions {
     let claimSubmit: (_ attempt: AgentComposerSubmitAttempt) -> AgentModeViewModel.AgentComposerSubmitClaimResult
     let executeSubmit: (_ claim: AgentModeViewModel.AgentComposerSubmitClaim, _ text: String) async -> AgentModeViewModel.UserTurnSubmissionResult
     let cancelRun: (_ target: AgentRunCancelTarget) async -> Void
+    let cancelRouting: (_ tabID: UUID) async -> Void
     let attachImages: (_ tabID: UUID, _ urls: [URL]) -> Void
     let removeImage: (_ tabID: UUID, _ attachmentID: UUID) -> Void
     let commitTaggedFile: (_ tabID: UUID, _ suggestion: MentionSuggestion, _ displayName: String) -> Void
@@ -114,6 +115,7 @@ struct AgentInputBar: View {
                 await agentModeVM.executeComposerSubmitAttempt(text: text, claim: claim)
             },
             cancelRun: { target in _ = await agentModeVM.cancelAgentRun(target: target) },
+            cancelRouting: { tabID in await agentModeVM.cancelFreshTaskRouting(tabID: tabID) },
             attachImages: { tabID, urls in agentModeVM.attachImages(tabID: tabID, urls: urls) },
             removeImage: { tabID, attachmentID in agentModeVM.removePendingImage(tabID: tabID, attachmentID: attachmentID) },
             commitTaggedFile: { tabID, suggestion, displayName in
@@ -654,12 +656,16 @@ struct AgentComposerView: View, Equatable {
                         mcpControlChip
                     }
                     if props.hasAvailableAgentProviders {
-                        agentProviderModelPicker
-                        acpModelParameterPickers
-                        reasoningEffortPicker
-                        claudeEffortPicker
-                        codexToolsButton
-                        claudeToolsButton
+                        if props.isGlobalModelRouterControllingFreshTask {
+                            automaticRouterTargetChip
+                        } else {
+                            agentProviderModelPicker
+                            acpModelParameterPickers
+                            reasoningEffortPicker
+                            claudeEffortPicker
+                            codexToolsButton
+                            claudeToolsButton
+                        }
                     } else {
                         connectAgentProvidersButton
                     }
@@ -687,7 +693,9 @@ struct AgentComposerView: View, Equatable {
                     transaction.animation = nil
                 }
 
-                if let cancelTarget = props.cancelTarget {
+                if props.isRoutingFreshTask, let tabID = props.currentTabID {
+                    CancelButton(action: { Task { await actions.cancelRouting(tabID) } })
+                } else if let cancelTarget = props.cancelTarget {
                     CancelButton(action: { cancelRun(cancelTarget) })
                 } else {
                     SendOrResendButton(
@@ -730,6 +738,25 @@ struct AgentComposerView: View, Equatable {
     }
 
     // MARK: - Agent Pickers
+
+    private var automaticRouterTargetChip: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(fontPreset.swiftUIFont(sizeAtNormal: 11, weight: .medium))
+            Text("Automatic · Jev")
+                .font(fontPreset.swiftUIFont(sizeAtNormal: 11, weight: .medium))
+        }
+        .foregroundColor(.accentColor)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.accentColor.opacity(0.10))
+        .cornerRadius(6)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Model Router")
+        .accessibilityValue("Automatic with Jev")
+        .hoverTooltip("Jev will choose the provider, model, and reasoning effort after you send. Turn off Router to choose them manually.")
+        .fixedSize(horizontal: true, vertical: false)
+    }
 
     private enum LayoutMetrics {
         static let providerChipMaxWidth: CGFloat = 250
