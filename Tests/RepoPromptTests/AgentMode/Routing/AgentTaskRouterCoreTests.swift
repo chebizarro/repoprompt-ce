@@ -302,21 +302,32 @@ final class AgentTaskRouterCoreTests: XCTestCase {
         XCTAssertTrue(request?.questions["route"]?.instructions.contains("Code and pull-request review") == true)
     }
 
-    func testJevBackendRejectsDuplicateOpaqueKeysWithoutCallingService() async {
-        let client = SelectingJevClient()
-        let credentials = JevRouterCredentialService(
-            secureKeys: SecureKeysService(secureStorage: TestSecureStorageBackend()),
-            client: client
-        )
-        let backend = JevTaskRouterBackend(credentialService: credentials)
-        let outcome = await backend.route(.init(
-            requestID: UUID(), contractVersion: AgentTaskRoutingRequest.currentContractVersion,
-            task: "task", scope: .primarySession, customInstructions: nil,
-            candidates: [descriptor("duplicate"), descriptor("duplicate")]
-        ))
-        XCTAssertEqual(outcome, .failed(category: .invalidRequest, retryable: false, evidence: nil))
-        let request = await client.lastRequest
-        XCTAssertNil(request)
+    func testJevBackendRejectsStructurallyInvalidRequestsWithoutCallingService() async {
+        let invalidCandidateSets: [(String, [AgentTaskRoutingCandidateDescriptor])] = [
+            ("duplicate opaque keys", [descriptor("duplicate"), descriptor("duplicate")]),
+            ("fewer than two candidates", [descriptor("only")]),
+            ("empty opaque key", [descriptor(""), descriptor("b")]),
+            (
+                "more than the maximum candidates",
+                (0 ... AgentTaskRoutingEnvelopeBuilder.maximumCandidates).map { descriptor("key-\($0)") }
+            )
+        ]
+        for (name, candidates) in invalidCandidateSets {
+            let client = SelectingJevClient()
+            let credentials = JevRouterCredentialService(
+                secureKeys: SecureKeysService(secureStorage: TestSecureStorageBackend()),
+                client: client
+            )
+            let backend = JevTaskRouterBackend(credentialService: credentials)
+            let outcome = await backend.route(.init(
+                requestID: UUID(), contractVersion: AgentTaskRoutingRequest.currentContractVersion,
+                task: "task", scope: .primarySession, customInstructions: nil,
+                candidates: candidates
+            ))
+            XCTAssertEqual(outcome, .failed(category: .invalidRequest, retryable: false, evidence: nil), name)
+            let request = await client.lastRequest
+            XCTAssertNil(request, name)
+        }
     }
 
     private func descriptor(_ key: String) -> AgentTaskRoutingCandidateDescriptor {

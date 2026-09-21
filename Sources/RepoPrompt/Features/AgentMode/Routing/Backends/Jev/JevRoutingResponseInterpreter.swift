@@ -42,7 +42,6 @@ struct JevRoutingResponseInterpreter {
         pinnedModel: String = JevRouterCredentialService.pinnedModel
     ) throws -> ValidatedResponse {
         guard response.model == pinnedModel else { throw ValidationError.wrongEvaluator }
-        let submittedOpaqueKeysByQuestionID = batch.submittedOpaqueKeysByQuestionID
         if let unexpected = Set(response.answers.keys).subtracting(batch.questionIDs).sorted().first {
             throw ValidationError.unexpectedAnswer(questionID: unexpected)
         }
@@ -53,7 +52,7 @@ struct JevRoutingResponseInterpreter {
             }
             validatedAnswers[question.id] = try validate(
                 answer,
-                submittedOpaqueKeys: submittedOpaqueKeysByQuestionID[question.id] ?? []
+                submittedOpaqueKeys: question.submittedOpaqueKeys
             )
         }
         guard response.usage.inputTokens >= 0, response.usage.outputTokens >= 0 else {

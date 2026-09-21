@@ -53,6 +53,31 @@ final class JevRoutingResponseInterpreterTests: XCTestCase {
         assertError(.invalidUsage, response: negativeUsage, batch: routeBatch())
     }
 
+    /// Exact-coverage enforcement applies to the shipped one-question policy too, not only batches.
+    func testRejectsMissingOrUnexpectedAnswersForTheShippedRouteQuestion() {
+        assertError(
+            .missingAnswer(questionID: "route"),
+            response: makeResponse(answers: [:]),
+            batch: routeBatch()
+        )
+        assertError(
+            .unexpectedAnswer(questionID: "effort"),
+            response: makeResponse(answers: [
+                "route": answer(choice: "a", probabilities: ["a": 0.6, "b": 0.4], confidence: 0.9),
+                "effort": answer(choice: "a", probabilities: ["a": 0.6, "b": 0.4], confidence: 0.9)
+            ]),
+            batch: routeBatch()
+        )
+        // A renamed answer key is an unexpected answer, never a silently accepted substitute.
+        assertError(
+            .unexpectedAnswer(questionID: "rout"),
+            response: makeResponse(answers: [
+                "rout": answer(choice: "a", probabilities: ["a": 0.6, "b": 0.4], confidence: 0.9)
+            ]),
+            batch: routeBatch()
+        )
+    }
+
     // MARK: - Batch validation
 
     func testValidatesEverySubmittedQuestionIndependently() throws {

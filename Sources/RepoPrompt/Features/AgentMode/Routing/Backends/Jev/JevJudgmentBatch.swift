@@ -17,6 +17,12 @@ struct JevJudgmentQuestion: Equatable {
     let id: String
     let instructions: String
     let criteria: [JevJudgmentCriterion]
+
+    /// The opaque keys this question offers. Validation is always scoped to a single question, so a
+    /// sibling question's key is never in scope here.
+    var submittedOpaqueKeys: Set<String> {
+        Set(criteria.map(\.opaqueKey))
+    }
 }
 
 /// An ordered set of independent choice questions evaluated in one Jev request.
@@ -73,7 +79,7 @@ struct JevJudgmentBatch: Equatable {
     /// response validation is always scoped to one question and never to the batch as a whole.
     var submittedOpaqueKeysByQuestionID: [String: Set<String>] {
         questions.reduce(into: [:]) { result, question in
-            result[question.id] = Set(question.criteria.map(\.opaqueKey))
+            result[question.id] = question.submittedOpaqueKeys
         }
     }
 
