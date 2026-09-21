@@ -937,7 +937,16 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     #endif
     private var hasPreparedForWindowClose = false
     private static let uiRefreshCoalesceDelayNanos: UInt64 = 75_000_000
-    private static let sessionSidebarRestoreBatchSize = 32
+    /// The restore service has already loaded and projected all metadata before
+    /// it begins yielding preferred rows. Publishing those rows in fixed-size
+    /// batches therefore adds no I/O overlap; it only forces the main actor to
+    /// rebuild the complete sidebar once per batch. Yield all preferred rows in
+    /// one bounded batch (at most one per persisted tab), after the separately
+    /// prioritized active-tab result has restored first-paint responsiveness.
+    static func sessionSidebarRestoreBatchSize(forPersistedTabCount count: Int) -> Int {
+        max(count, 1)
+    }
+
     private nonisolated static let sessionSidebarRestoreRetryLimit = 1
     nonisolated static let transcriptVisibleItemLimit = 50
     private nonisolated static let detachedTranscriptVisibleItemBuffer = 5
@@ -14078,7 +14087,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
 
         let prioritizedBuilder = sidebarPrioritizedIndexBuilder
         let streamBuilder = sidebarIndexStreamBuilder
-        let restoreBatchSize = Self.sessionSidebarRestoreBatchSize
+        let restoreBatchSize = Self.sessionSidebarRestoreBatchSize(forPersistedTabCount: persistedTabs.count)
         sessionListCacheTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             #if DEBUG

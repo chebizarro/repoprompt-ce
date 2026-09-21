@@ -120,6 +120,20 @@ final class AgentSidebarSearchFieldDeferralTests: XCTestCase {
         XCTAssertEqual(viewModel.test_sidebarSearchFieldsMaterializationCount, 6)
     }
 
+    // MARK: - Restore publication batching
+
+    func testRestoreBatchSizePublishesPreferredRowsOnceAfterPrioritizedActiveTab() {
+        XCTAssertEqual(
+            AgentModeViewModel.sessionSidebarRestoreBatchSize(forPersistedTabCount: 0),
+            1
+        )
+        XCTAssertEqual(
+            AgentModeViewModel.sessionSidebarRestoreBatchSize(forPersistedTabCount: 969),
+            969,
+            "all already-projected preferred rows should arrive in one main-actor publication"
+        )
+    }
+
     // MARK: - Projection-level invalidation contract
 
     func testInactiveSearchProjectionMaterializesNoSearchFields() {

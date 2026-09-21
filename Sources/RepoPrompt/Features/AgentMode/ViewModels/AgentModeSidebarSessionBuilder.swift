@@ -80,8 +80,13 @@ struct AgentModeSidebarSessionBuilder {
         }
         let tabNameByID = sidebarTabNameLookup(for: rowTabs)
         let tabOrder = sidebarTabOrder(for: rowTabs)
+        // `authoritativeSessionIDByTabID` and `rowTabs` can both contain roughly
+        // one entry per persisted chat. Scanning `rowTabs` for every binding made
+        // this O(tabs × bindings) during workspace restore (nearly one million
+        // comparisons in a 969-tab workspace). Build the membership set once.
+        let rowTabIDs = Set(rowTabs.map(\.id))
         let explicitSessionIDByTabID = authoritativeSessionIDByTabID.filter { tabID, _ in
-            rowTabs.contains(where: { $0.id == tabID })
+            rowTabIDs.contains(tabID)
         }
         let explicitTabIDBySessionID = Dictionary(
             explicitSessionIDByTabID.map { ($0.value, $0.key) },
