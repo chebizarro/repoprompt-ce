@@ -1636,6 +1636,7 @@ actor ServerNetworkManager {
         private var debugAfterPromptExportHostCompletionForTesting: (@Sendable (UUID, String, Duration) -> Void)?
         private var debugBeforeAdmissionEvictionCloseForTesting: (@Sendable (UUID) async -> Void)?
         private var debugBeforeActiveToolCancellationScanForTesting: (@Sendable (UUID, [UUID]) async -> Void)?
+        private var debugConnectionRemovalWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
         private var debugAllocatedActiveToolScopeIDsForTesting: Set<UUID> = []
         private var debugDuringAdmissionEvictionCloseForTesting: (@Sendable (UUID) async -> Void)?
         private var debugAfterAdmissionEvictionRemovalCommittedForTesting: (@Sendable (UUID) async -> Void)?
@@ -7287,7 +7288,13 @@ actor ServerNetworkManager {
             connectionsBeingRemoved.insert(id)
             invalidateBootstrapReplacementCredits(predecessorConnectionID: id)
         }
-        defer { connectionsBeingRemoved.remove(id) }
+        defer {
+            connectionsBeingRemoved.remove(id)
+            #if DEBUG
+                let waiters = debugConnectionRemovalWaiters.removeValue(forKey: id) ?? []
+                waiters.forEach { $0.resume() }
+            #endif
+        }
 
         // Claim and persist the first terminal cause before any suspension.
         // Later termination/watchdog cleanup must not overwrite the event that
@@ -9976,7 +9983,9 @@ actor ServerNetworkManager {
             saveRoutingState()
         }
 
-        func debugRemoveConnection(_ id: UUID) async {
+        /// Test cleanup must join the existing removal owner, not merely request removal.
+        /// Keep production duplicate-removal calls non-joining: an owner can depend on them.
+        func debugRemoveConnection(_ id: UUID, onJoiningRemoval: (@Sendable () -> Void)? = nil) async {
             #if DEBUG
                 debugExecutionWatchdogAbortTargets.removeValue(forKey: id)
             #endif
@@ -9987,6 +9996,17 @@ actor ServerNetworkManager {
                     initiator: .app
                 )
             )
+            // The flag check and registration are actor-atomic. The owner drains these
+            // only at terminal exit, after all admission and lifecycle state is cleared.
+            guard connectionsBeingRemoved.contains(id) else { return }
+            await withCheckedContinuation { continuation in
+                debugConnectionRemovalWaiters[id, default: []].append(continuation)
+                onJoiningRemoval?()
+            }
+        }
+
+        func debugConnectionRemovalWaiterCount(for id: UUID) -> Int {
+            debugConnectionRemovalWaiters[id]?.count ?? 0
         }
 
         #if DEBUG
