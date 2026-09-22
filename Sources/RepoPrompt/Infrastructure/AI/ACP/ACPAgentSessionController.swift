@@ -2156,21 +2156,22 @@ actor ACPAgentSessionController {
     /// A later parameter or mode mutation can invalidate an earlier successful
     /// selection. Admit the complete effective request using only live session
     /// authority, immediately before dispatching the prompt.
-    /// Refuse to prompt on a resumed session whose permission policy cannot be established.
+    /// Refuse to prompt on a resumed session whose requested permission level cannot be applied.
     ///
-    /// Devin advertises no `normal`/`auto` session mode, so every level below Full Approval maps
-    /// to nil and sends nothing. On a session opened with `session/load` that is not a downgrade:
-    /// the loaded session keeps whatever mode it already had, which can be a `bypass` this app
-    /// set on an earlier run. Prompting anyway would silently run the turn at a higher policy
-    /// than the one requested.
+    /// The guard fires when the request carries no session mode at all. Interactively that means
+    /// Normal or Provider Default -- Accept Edits and Smart map to the advertised `accept-edits`
+    /// and `smart`, so they are applied and are unaffected. In unattended runs every level below
+    /// Full Approval sends nothing, because they keep the floor rather than escalate.
     ///
-    /// Rather than invent a mapping for `normal` -- no advertised value carries that meaning, and
-    /// guessing one would change what the user chose -- the request is refused. A fresh session
-    /// is unaffected, because there is no inherited mode to disagree with, and an explicit Full
-    /// Approval resume still proceeds: it sends `bypass` and verifies it.
+    /// Sending nothing is not a downgrade. A session opened with `session/load` keeps the mode it
+    /// already had, which can be a `bypass` this app set on an earlier run, so prompting anyway
+    /// would run the turn at a higher policy than the one requested.
     ///
-    /// Scoped to Devin: other ACP providers map their levels to real advertised modes, so a nil
-    /// there does not carry this ambiguity.
+    /// Devin advertises no value meaning `normal`/`auto`, so there is nothing to send instead;
+    /// inventing one would change the level the user selected. A fresh session is unaffected,
+    /// because there is no inherited mode to disagree with.
+    ///
+    /// Scoped to Devin so that other ACP providers are unchanged by this guard.
     private func validateResumedSessionPermissionPolicy(_ request: ACPRunRequest) throws {
         guard provider.providerID == .devin,
               case .load = sessionConfiguration.mode,
@@ -2178,10 +2179,8 @@ actor ACPAgentSessionController {
         else { return }
         throw ControllerError.requestFailed(
             """
-            This conversation was resumed, and the selected Devin permission level cannot be \
-            applied to it. Devin advertises no session mode meaning "normal", so a resumed \
-            session keeps the level it was last run with -- possibly Full Approval. Start a new \
-            conversation to run at the selected level, or select Full Approval to continue this one.
+            Devin cannot apply the selected permission level to this resumed conversation. \
+            Start a new conversation, or choose a permission level that can be applied on resume.
             """
         )
     }
