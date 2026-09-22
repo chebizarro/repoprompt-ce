@@ -61,6 +61,8 @@ import XCTest
             XCTAssertNil(after.connectionLifecycleGeneration)
             let remainingWaiters = await manager.debugConnectionRemovalWaiterCount(for: id)
             XCTAssertEqual(remainingWaiters, 0)
+            let hasOperation = await manager.debugHasConnectionRemovalOperation(for: id)
+            XCTAssertFalse(hasOperation)
             let history = await manager.debugConnectionHistoryPayload(
                 limit: 200, clientName: nil, sessionFingerprint: nil, connectionID: id
             )
@@ -70,6 +72,59 @@ import XCTest
             await manager.debugRemoveConnection(id)
             let finalWaiters = await manager.debugConnectionRemovalWaiterCount(for: id)
             XCTAssertEqual(finalWaiters, 0)
+        }
+
+        func testDebugCleanupFinishesWhenStopInvalidatesCommittedRemoval() async {
+            let manager = ServerNetworkManager(domainHost: AppDomainRuntimeComposition.shared.runtime.domainHost)
+            let id = UUID()
+            let clientID = "invalidated-cleanup-owner-test"
+            await manager.debugInstallAdmissionEvictionCandidateForTesting(
+                connectionID: id,
+                connection: RemovalTestConnection(),
+                clientID: clientID,
+                totalToolCalls: 1,
+                createdAt: Date(timeIntervalSince1970: 1234)
+            )
+            let gate = RemovalGate()
+            let committed = expectation(description: "eviction committed before removal body entry")
+            await manager.debugSetAfterAdmissionEvictionRemovalCommittedForTesting { connectionID in
+                guard connectionID == id else { return }
+                committed.fulfill()
+                await gate.wait()
+            }
+            let eviction = Task { await manager.debugEvictLeastValuableForTesting(clientID: clientID) }
+            await fulfillment(of: [committed], timeout: 5)
+            let joined = expectation(description: "debug cleanup joined the committed operation")
+            var cleanupFinished = false
+            let cleanup = Task {
+                await manager.debugRemoveConnection(id, onJoiningRemoval: { joined.fulfill() })
+                cleanupFinished = true
+            }
+            await fulfillment(of: [joined], timeout: 5)
+            let waiting = await manager.debugConnectionRemovalWaiterCount(for: id)
+            XCTAssertEqual(waiting, 1)
+            XCTAssertFalse(cleanupFinished)
+
+            await manager.stop()
+            // Stop invalidates the committed identity, but completion belongs to the
+            // exact parked operation. It must finish when that owner rejects its commit.
+            XCTAssertFalse(cleanupFinished)
+            gate.release()
+            _ = await eviction.value
+            await cleanup.value
+            await manager.debugSetAfterAdmissionEvictionRemovalCommittedForTesting(nil)
+            XCTAssertTrue(cleanupFinished)
+            let after = await manager.debugDirectAdmissionStateForTesting(connectionID: id)
+            XCTAssertNil(after.pendingClientID)
+            XCTAssertNil(after.indexedClientID)
+            XCTAssertTrue(after.activeClientIDs.isEmpty)
+            XCTAssertFalse(after.hasStats)
+            XCTAssertNil(after.connectionLifecycleGeneration)
+            let remainingWaiters = await manager.debugConnectionRemovalWaiterCount(for: id)
+            let hasOperation = await manager.debugHasConnectionRemovalOperation(for: id)
+            XCTAssertEqual(remainingWaiters, 0)
+            XCTAssertFalse(hasOperation)
+            await manager.debugRemoveConnection(id)
         }
 
         @MainActor
