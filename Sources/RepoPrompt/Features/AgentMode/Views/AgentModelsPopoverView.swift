@@ -271,7 +271,8 @@ struct AgentModelsPopoverView: View {
         }
     }
 
-    private func contextBuilderAgentModelMenuItems() -> [StableMenuItem] {
+    /// Internal so behavioral tests can invoke the same menu actions as the popover.
+    func contextBuilderAgentModelMenuItems() -> [StableMenuItem] {
         var items = promptViewModel.availableAgentKinds.map { agent in
             AgentModelStableMenuItems.agentSubmenu(
                 agentKind: agent,
