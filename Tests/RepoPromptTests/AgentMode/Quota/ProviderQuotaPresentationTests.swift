@@ -150,7 +150,155 @@ final class ProviderQuotaPresentationTests: XCTestCase {
         XCTAssertEqual(row.barFraction, 1.0, "the bar does")
     }
 
-    func testReachedBucketRendersLimitReached() throws {
+    // MARK: - Bar semantics
+
+    func testSpendControlBarShowsUsedFractionNotRemaining() throws {
+        let spendControl = ProviderQuotaSpendControl(
+            limitRaw: "$100",
+            usedRaw: "$62",
+            percent: ProviderQuotaPercent(rawValue: 38, sense: .remaining, declaredUpperBound: 100),
+            resetsAt: nil,
+            isReached: false
+        )
+        let state = ProviderQuotaPresenter.viewState(
+            for: .loaded(snapshot(buckets: [bucket(
+                spendControl: spendControl,
+                windows: [window(percent: ProviderQuotaPercent(rawValue: 62, sense: .used))]
+            )])),
+            now: now
+        )
+        let rows = try XCTUnwrap(loaded(state).sections.first?.rows)
+        let windowRow = try XCTUnwrap(rows.first { $0.title == "5-hour limit" })
+        let spendRow = try XCTUnwrap(rows.first { $0.title == "Spend limit" })
+
+        // Both bars depict *used*, so 38% remaining and 62% used fill identically. Reading
+        // the remaining figure straight into the bar would have drawn 0.38 against the
+        // window's 0.62 and made the account look less consumed than it is.
+        XCTAssertEqual(try XCTUnwrap(spendRow.barFraction), 0.62, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(windowRow.barFraction), 0.62, accuracy: 0.0001)
+        XCTAssertEqual(spendRow.valueText, "38% remaining", "the printed text stays raw")
+    }
+
+    func testUsedFractionIsNotDerivedWithoutADeclaredBound() {
+        // A remaining figure with no declared bound cannot be converted, so no bar is drawn
+        // rather than one implying a scale the provider never stated.
+        let unbounded = ProviderQuotaPercent(rawValue: 38, sense: .remaining, declaredUpperBound: nil)
+        XCTAssertNil(ProviderQuotaPresenter.usedFraction(for: unbounded))
+
+        let used = ProviderQuotaPercent(rawValue: 62, sense: .used)
+        XCTAssertEqual(try XCTUnwrap(ProviderQuotaPresenter.usedFraction(for: used)), 0.62, accuracy: 0.0001)
+    }
+
+    func testSpendControlBarClampsWhileTextKeepsRawValue() throws {
+        // A negative remaining figure means more than the limit was spent.
+        let spendControl = ProviderQuotaSpendControl(
+            limitRaw: "$100",
+            usedRaw: "$112",
+            percent: ProviderQuotaPercent(rawValue: -12, sense: .remaining, declaredUpperBound: 100),
+            resetsAt: nil,
+            isReached: nil
+        )
+        let state = ProviderQuotaPresenter.viewState(
+            for: .loaded(snapshot(buckets: [bucket(
+                spendControl: spendControl,
+                windows: [window(percent: ProviderQuotaPercent(rawValue: 5, sense: .used))]
+            )])),
+            now: now
+        )
+        let spendRow = try XCTUnwrap(loaded(state).sections.first?.rows.first { $0.title == "Spend limit" })
+        XCTAssertEqual(spendRow.valueText, "-12% remaining", "the printed number never clamps")
+        XCTAssertEqual(try XCTUnwrap(spendRow.barFraction), 1.0, accuracy: 0.0001, "the bar does")
+    }
+
+    // MARK: - Reached state is per-window, not per-bucket
+
+    func testReachedBucketPreservesEveryWindowFigureWhenNoWindowIsNamed() throws {
+        // `rate_limit_reached` does not identify a window, so both windows keep their real
+        // figures and the bucket carries the status.
+        let state = ProviderQuotaPresenter.viewState(
+            for: .loaded(snapshot(buckets: [bucket(
+                isReached: true,
+                windows: [
+                    window(role: "primary", percent: ProviderQuotaPercent(rawValue: 100, sense: .used)),
+                    window(role: "secondary", percent: ProviderQuotaPercent(rawValue: 21, sense: .used))
+                ]
+            )])),
+            now: now
+        )
+        let section = try XCTUnwrap(loaded(state).sections.first)
+
+        XCTAssertEqual(section.statusText, "Limit reached", "bucket-level status is surfaced")
+        let primary = try XCTUnwrap(section.rows.first { $0.title == "5-hour limit" })
+        let secondary = try XCTUnwrap(section.rows.last)
+        XCTAssertEqual(primary.valueText, "100% used")
+        XCTAssertEqual(
+            secondary.valueText,
+            "21% used",
+            "a weekly window at 21% must not be relabelled 'Limit reached'"
+        )
+        XCTAssertFalse(secondary.isReached)
+    }
+
+    func testOnlyTheNamedWindowIsMarkedReached() throws {
+        // A provider whose reached-type does name a role marks that row only.
+        let reachedBucket = ProviderQuotaBucket(
+            bucketID: ProviderQuotaBucketID(rawValue: "codex"),
+            displayLabel: "Codex",
+            nativeModelAlias: nil,
+            scope: .accountWide,
+            reachedType: "primary",
+            isReached: true,
+            planType: nil,
+            credits: nil,
+            spendControl: nil,
+            windows: [
+                window(role: "primary", percent: ProviderQuotaPercent(rawValue: 100, sense: .used)),
+                window(role: "secondary", percent: ProviderQuotaPercent(rawValue: 21, sense: .used))
+            ]
+        )
+        let state = ProviderQuotaPresenter.viewState(
+            for: .loaded(snapshot(buckets: [reachedBucket])),
+            now: now
+        )
+        let section = try XCTUnwrap(loaded(state).sections.first)
+
+        let primary = try XCTUnwrap(section.rows.first)
+        let secondary = try XCTUnwrap(section.rows.last)
+        XCTAssertEqual(primary.valueText, "Limit reached")
+        XCTAssertTrue(primary.isReached)
+        XCTAssertEqual(secondary.valueText, "21% used", "the other window keeps its figure")
+        XCTAssertFalse(secondary.isReached)
+        XCTAssertNil(section.statusText, "the named row already reports it; no duplicate banner")
+    }
+
+    func testCodexReachedTypesNameNoWindowRole() {
+        // None of the generated `RateLimitReachedType` values identify a window.
+        for reachedType in [
+            "rate_limit_reached",
+            "workspace_owner_credits_depleted",
+            "workspace_member_credits_depleted",
+            "workspace_owner_usage_limit_reached",
+            "workspace_member_usage_limit_reached"
+        ] {
+            XCTAssertNil(
+                ProviderQuotaPresenter.reachedWindowRole(forReachedType: reachedType),
+                "\(reachedType) must not be read as a window role"
+            )
+        }
+        XCTAssertNil(ProviderQuotaPresenter.reachedWindowRole(forReachedType: nil))
+    }
+
+    func testNotReachedBucketHasNoStatusText() throws {
+        let state = ProviderQuotaPresenter.viewState(
+            for: .loaded(snapshot(buckets: [bucket(windows: [window(
+                percent: ProviderQuotaPercent(rawValue: 62, sense: .used)
+            )])])),
+            now: now
+        )
+        XCTAssertNil(try loaded(state).sections.first?.statusText)
+    }
+
+    func testReachedBucketReportsStatusAndStillShowsTheWindowFigure() throws {
         let state = ProviderQuotaPresenter.viewState(
             for: .loaded(snapshot(buckets: [bucket(
                 isReached: true,
@@ -161,9 +309,14 @@ final class ProviderQuotaPresentationTests: XCTestCase {
             )])),
             now: now
         )
-        let row = try XCTUnwrap(loaded(state).sections.first?.rows.first)
-        XCTAssertEqual(row.valueText, "Limit reached")
-        XCTAssertTrue(row.isReached)
+        let section = try XCTUnwrap(loaded(state).sections.first)
+        let row = try XCTUnwrap(section.rows.first)
+
+        // The bucket says reached; the window still reports what the provider measured and
+        // keeps its reset detail.
+        XCTAssertEqual(section.statusText, "Limit reached")
+        XCTAssertEqual(row.valueText, "100% used")
+        XCTAssertTrue(try XCTUnwrap(row.detailText).hasPrefix("Resets "))
     }
 
     // MARK: - Staleness

@@ -31,6 +31,9 @@ struct CodexQuotaWindowRow: Equatable, Identifiable {
 struct CodexQuotaBucketSection: Equatable, Identifiable {
     let id: String
     let title: String
+    /// Bucket-level status when the provider declared the bucket reached without naming
+    /// which window. Reported alongside the real per-window figures, never instead of them.
+    let statusText: String?
     let rows: [CodexQuotaWindowRow]
 }
 
@@ -114,9 +117,17 @@ enum ProviderQuotaPresenter {
         if let spendControl = bucket.spendControl {
             rows.append(spendControlRow(spendControl, bucketID: bucket.bucketID, now: now))
         }
+        // Surface a reached bucket conservatively: if the provider named a window, that row
+        // already says so; otherwise the bucket says so and every window keeps its figure.
+        let hasWindowLevelReached = rows.contains { $0.isReached }
+        let statusText: String? = (bucket.isReached == true && !hasWindowLevelReached)
+            ? "Limit reached"
+            : nil
+
         return CodexQuotaBucketSection(
             id: bucket.bucketID.rawValue,
             title: bucketTitle(for: bucket, coverage: coverage),
+            statusText: statusText,
             rows: rows
         )
     }
@@ -136,12 +147,43 @@ enum ProviderQuotaPresenter {
         }
     }
 
+    /// The window role a provider's reached-type names, when its own vocabulary identifies
+    /// one.
+    ///
+    /// None of the Codex `RateLimitReachedType` values (`rate_limit_reached`,
+    /// `workspace_*_credits_depleted`, `workspace_*_usage_limit_reached`) name a window, so
+    /// this returns `nil` for them and callers fall back to bucket-level reporting. Marking
+    /// every window of a reached bucket would destroy the real per-window figures, and
+    /// inferring the role from a percentage would contradict the rule that an explicit
+    /// reached flag is independent of any percentage.
+    static func reachedWindowRole(forReachedType reachedType: String?) -> String? {
+        guard let reachedType else { return nil }
+        switch reachedType {
+        case "primary", "secondary":
+            return reachedType
+        default:
+            return nil
+        }
+    }
+
+    /// Bars always depict the *used* fraction, so a remaining-sense figure can never render
+    /// as the mirror image of a used-sense one. Returns `nil` when the provider declared no
+    /// bound to derive from, because a bar would otherwise imply a scale it never stated.
+    static func usedFraction(for percent: ProviderQuotaPercent) -> Double? {
+        guard let used = percent.usedPercentIfDerivable else { return nil }
+        let bound = percent.declaredUpperBound ?? 100
+        return min(max(used, 0), bound) / max(bound, 1)
+    }
+
     private static func row(
         for window: ProviderQuotaWindow,
         bucket: ProviderQuotaBucket,
         now: Date
     ) -> CodexQuotaWindowRow {
+        // Only the window the provider actually named is marked reached; the rest keep their
+        // real figures and the bucket reports its own status separately.
         let isReached = bucket.isReached == true
+            && reachedWindowRole(forReachedType: bucket.reachedType) == window.nativeRole
         let availability = ProviderQuotaSnapshot.availability(for: window, now: now)
 
         guard let percent = window.percent else {
@@ -170,7 +212,7 @@ enum ProviderQuotaPresenter {
             title: windowTitle(for: window),
             valueText: isReached ? "Limit reached" : percentText(percent),
             detailText: details.isEmpty ? nil : details.joined(separator: " · "),
-            barFraction: percent.clampedForDisplay() / max(percent.declaredUpperBound ?? 100, 1),
+            barFraction: usedFraction(for: percent),
             isReached: isReached
         )
     }
@@ -189,7 +231,8 @@ enum ProviderQuotaPresenter {
             title: "Spend limit",
             valueText: spendControl.isReached == true ? "Limit reached" : percentText(spendControl.percent),
             detailText: details.isEmpty ? nil : details.joined(separator: " · "),
-            barFraction: spendControl.percent.clampedForDisplay() / max(spendControl.percent.declaredUpperBound ?? 100, 1),
+            // Codex reports spend control as REMAINING; the bar still shows used.
+            barFraction: usedFraction(for: spendControl.percent),
             isReached: spendControl.isReached == true
         )
     }

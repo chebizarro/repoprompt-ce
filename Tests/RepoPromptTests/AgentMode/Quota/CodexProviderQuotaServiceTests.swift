@@ -204,14 +204,169 @@ final class CodexProviderQuotaServiceTests: XCTestCase {
         let (service, _) = makeService(client: client)
 
         await service.setEnabled(true)
-        // No subscriber: an explicit refresh is still honoured, and is the only read.
+        let stream = await service.subscribe()
+        _ = stream
+        // Let the priming read settle so the overlap under test is refresh-vs-refresh.
+        let loaded = await waitUntil { if case .loaded = await service.test_status() { true } else { false } }
+        XCTAssertTrue(loaded)
+        let primingReads = await client.requestedMethods.count
+
         async let first: Void = service.refreshNow()
         async let second: Void = service.refreshNow()
         async let third: Void = service.refreshNow()
         _ = await (first, second, third)
 
         let methods = await client.requestedMethods
-        XCTAssertEqual(methods.count, 1, "overlapping refreshes coalesce into one read")
+        XCTAssertEqual(
+            methods.count - primingReads,
+            1,
+            "overlapping refreshes coalesce into one read"
+        )
+    }
+
+    func testEnablingWithoutAnObserverCreatesNoTransport() async {
+        let client = FakeQuotaClient(response: readResponse(primaryUsedPercent: 62))
+        let (service, factoryCount) = makeService(client: client)
+
+        // Enabling is an intent, not an activation: the transport starts only once a surface
+        // actually observes.
+        await service.setEnabled(true)
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        XCTAssertEqual(factoryCount(), 0)
+        let startCount = await client.startCount
+        XCTAssertEqual(startCount, 0)
+        let hasTransport = await service.test_hasTransport()
+        XCTAssertFalse(hasTransport)
+        let status = await service.test_status()
+        XCTAssertEqual(status, .idle, "enabled but unobserved reports idle, never a zero")
+    }
+
+    // MARK: - Unobserved refresh must stay inert (P1)
+
+    func testRefreshWithoutSubscriberCreatesNoClientReadOrProcess() async {
+        let client = FakeQuotaClient(response: readResponse(primaryUsedPercent: 62))
+        let (service, factoryCount) = makeService(client: client)
+
+        await service.setEnabled(true)
+        // Enabled, but nothing is observing: a manual refresh must not manufacture a
+        // transport that no teardown path will ever reclaim.
+        await service.refreshNow()
+
+        XCTAssertEqual(factoryCount(), 0, "no client is constructed for an unobserved refresh")
+        let startCount = await client.startCount
+        let methods = await client.requestedMethods
+        XCTAssertEqual(startCount, 0, "no process is started")
+        XCTAssertEqual(methods, [], "no read is issued")
+        let hasTransport = await service.test_hasTransport()
+        XCTAssertFalse(hasTransport, "nothing is retained")
+    }
+
+    func testRefreshAfterLastSubscriberLeavesCreatesNoTransport() async {
+        let client = FakeQuotaClient(response: readResponse(primaryUsedPercent: 62))
+        let (service, _) = makeService(client: client)
+
+        await service.setEnabled(true)
+        var stream: AsyncStream<CodexQuotaStatus>? = await service.subscribe()
+        let loaded = await waitUntil { if case .loaded = await service.test_status() { true } else { false } }
+        XCTAssertTrue(loaded)
+
+        // Drop the subscriber, which tears the transport down.
+        stream = nil
+        _ = stream
+        let tornDown = await waitUntil { await service.test_subscriberCount() == 0 }
+        XCTAssertTrue(tornDown)
+        let readsBefore = await client.requestedMethods.count
+
+        await service.refreshNow()
+
+        let readsAfter = await client.requestedMethods.count
+        XCTAssertEqual(readsAfter, readsBefore, "a refresh raced past teardown spends no read")
+        let hasTransport = await service.test_hasTransport()
+        XCTAssertFalse(hasTransport, "and re-installs no client")
+    }
+
+    func testRefreshInterleavedWithDeactivationLeavesNoRunningClient() async {
+        let client = FakeQuotaClient(response: readResponse(primaryUsedPercent: 62))
+        // Hold the read open so teardown lands while it is in flight.
+        await client.setResponseDelay(nanos: 300_000_000)
+        let (service, _) = makeService(client: client)
+
+        await service.setEnabled(true)
+        var stream: AsyncStream<CodexQuotaStatus>? = await service.subscribe()
+        _ = await waitUntil { await service.test_hasTransport() }
+
+        async let refresh: Void = service.refreshNow()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        // Surface disappears mid-read.
+        stream = nil
+        _ = stream
+        await refresh
+
+        let tornDown = await waitUntil { await service.test_hasTransport() == false }
+        XCTAssertTrue(tornDown, "no client survives the interleave")
+        let stopped = await waitUntil { await client.stopCount >= 1 }
+        XCTAssertTrue(stopped, "the owned process is stopped")
+    }
+
+    // MARK: - In-flight generation fence
+
+    func testStaleReadCompletionDoesNotClearANewerSingleFlightRegistration() async {
+        let client = FakeQuotaClient(response: readResponse(primaryUsedPercent: 10))
+        // Long enough that read B is still registered when read A's frame resumes.
+        await client.setResponseDelay(nanos: 400_000_000)
+        let (service, _) = makeService(client: client)
+
+        await service.setEnabled(true)
+        var streamA: AsyncStream<CodexQuotaStatus>? = await service.subscribe()
+        _ = await waitUntil { await service.test_hasTransport() }
+
+        // Read A is in flight when the feature is switched off, which cancels it and clears
+        // the registration.
+        async let readA: Void = service.refreshNow()
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        let generationBefore = await service.test_transportGeneration()
+        await service.setEnabled(false)
+        streamA = nil
+        _ = streamA
+
+        // Restart: read B belongs to the new generation and registers itself.
+        await service.setEnabled(true)
+        let generationAfter = await service.test_transportGeneration()
+        XCTAssertGreaterThan(generationAfter, generationBefore, "teardown fenced the old transport")
+        let streamB = await service.subscribe()
+        _ = streamB
+        let bRegistered = await waitUntil { await service.test_hasInFlightRead() }
+        XCTAssertTrue(bRegistered, "the restarted transport has a read in flight")
+
+        // A's frame now resumes. It must not clear B's registration.
+        await readA
+
+        let stillRegistered = await service.test_hasInFlightRead()
+        XCTAssertTrue(
+            stillRegistered,
+            "a stale read's completion must not unfence the newer read's single-flight guard"
+        )
+    }
+
+    func testReadCompletingAfterDisableDoesNotPublish() async {
+        let client = FakeQuotaClient(response: readResponse(primaryUsedPercent: 77))
+        await client.setResponseDelay(nanos: 250_000_000)
+        let (service, _) = makeService(client: client)
+
+        await service.setEnabled(true)
+        var stream: AsyncStream<CodexQuotaStatus>? = await service.subscribe()
+        _ = await waitUntil { await service.test_hasTransport() }
+
+        async let read: Void = service.refreshNow()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        await service.setEnabled(false)
+        stream = nil
+        _ = stream
+        await read
+
+        let status = await service.test_status()
+        XCTAssertEqual(status, .disabled, "a read that outlived its generation publishes nothing")
     }
 
     func testForegroundRefreshIsBoundedByAMinimumGap() async {

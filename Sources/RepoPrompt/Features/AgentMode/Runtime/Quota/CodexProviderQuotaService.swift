@@ -56,10 +56,19 @@ actor CodexProviderQuotaService {
     private let requestTimeout: TimeInterval
     private let now: @Sendable () -> Date
 
+    /// Identifies one read so a late completion cannot clear a newer read's registration.
+    private struct InFlightRead {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
     private var isEnabled = false
     private var client: (any CodexQuotaAppServerClient)?
     private var notificationTask: Task<Void, Never>?
-    private var inFlightRead: Task<Void, Never>?
+    private var inFlightRead: InFlightRead?
+    /// Bumped by every teardown. A read that spans a teardown is stale on completion and
+    /// must not adopt, clear, or leak state belonging to the transport that replaced it.
+    private var transportGeneration: UInt64 = 0
     private var snapshot: ProviderQuotaSnapshot?
     private var status: CodexQuotaStatus = .disabled
     private var continuations: [UUID: AsyncStream<CodexQuotaStatus>.Continuation] = [:]
@@ -127,12 +136,15 @@ actor CodexProviderQuotaService {
         }
     }
 
-    /// Explicit user refresh. Always allowed while enabled; coalesces with an in-flight read.
+    /// Explicit user refresh.
+    ///
+    /// Requires a live observer: a refresh raced against surface teardown must not construct
+    /// or retain a transport that nothing is watching and nothing will later stop.
     func refreshNow() async {
-        guard isEnabled else { return }
+        guard isEnabled, !continuations.isEmpty else { return }
         // A previously failed notification loop is re-established here rather than by a timer.
         startIfPossible()
-        await performRead(force: true)
+        await performRead()
     }
 
     /// Bounded foreground trigger: spends a read only after a meaningful gap.
@@ -143,7 +155,7 @@ actor CodexProviderQuotaService {
         {
             return
         }
-        await performRead(force: false)
+        await performRead()
     }
 
     /// Account switch or sign-out. The prior account's snapshot is discarded rather than
@@ -188,7 +200,7 @@ actor CodexProviderQuotaService {
             await runNotificationLoop(client: client)
         }
         Task { [weak self] in
-            await self?.performRead(force: false)
+            await self?.performRead()
         }
     }
 
@@ -196,7 +208,7 @@ actor CodexProviderQuotaService {
         do {
             try await client.startIfNeeded()
         } catch {
-            handleTransportFailure(error)
+            handleTransportFailure(error, generation: transportGeneration)
             await discardNotificationClient(client)
             return
         }
@@ -217,6 +229,8 @@ actor CodexProviderQuotaService {
     /// nothing retries autonomously, so this cannot become a polling loop.
     private func discardNotificationClient(_ client: any CodexQuotaAppServerClient) async {
         guard !Task.isCancelled else { return }
+        // Retiring this transport invalidates any read still riding on it.
+        transportGeneration &+= 1
         notificationTask = nil
         self.client = nil
         await client.stop()
@@ -224,7 +238,10 @@ actor CodexProviderQuotaService {
 
     private func ingestNotification(_ notification: CodexAppServerClient.Notification) async {
         guard isEnabled else { return }
+        let generation = transportGeneration
         let accountID = await accountIDProvider()
+        // `accountIDProvider` suspends; a teardown may have landed meanwhile.
+        guard isEnabled, transportGeneration == generation else { return }
         guard let delta = CodexProviderQuotaMapper.mapUpdatedNotification(
             params: notification.params,
             fallbackAccountID: accountID,
@@ -234,9 +251,10 @@ actor CodexProviderQuotaService {
     }
 
     private func teardownTransport() {
+        transportGeneration &+= 1
         notificationTask?.cancel()
         notificationTask = nil
-        inFlightRead?.cancel()
+        inFlightRead?.task.cancel()
         inFlightRead = nil
         let client = client
         self.client = nil
@@ -246,48 +264,71 @@ actor CodexProviderQuotaService {
 
     // MARK: - Reads
 
-    private func performRead(force: Bool) async {
-        guard isEnabled else { return }
+    /// Issues one account read.
+    ///
+    /// Every caller requires a live observer. An unobserved read would construct a transport
+    /// that no `removeSubscriber` teardown will ever reclaim, so the observer check is the
+    /// single admission point rather than a per-caller decision.
+    private func performRead() async {
+        guard isEnabled, !continuations.isEmpty else { return }
         if let inFlightRead {
             // Single-flight: join the in-flight read instead of issuing a duplicate.
-            await inFlightRead.value
+            await inFlightRead.task.value
             return
         }
-        guard force || !continuations.isEmpty else { return }
 
         if snapshot == nil {
             publish(.loading)
         }
         lastReadStartedAt = now()
 
-        let client = client ?? clientFactory()
-        self.client = client
+        let generation = transportGeneration
+        let installedClientForThisRead = client == nil
+        let readClient = client ?? clientFactory()
+        client = readClient
 
+        let readID = UUID()
         let task = Task { [weak self, requestTimeout] in
             guard let self else { return }
             do {
-                try await client.startIfNeeded()
-                let response = try await client.request(
+                try await readClient.startIfNeeded()
+                let response = try await readClient.request(
                     method: CodexProviderQuotaMapper.readMethod,
                     params: nil,
                     timeout: requestTimeout
                 )
-                await handleReadResponse(response)
+                await handleReadResponse(response, generation: generation)
             } catch {
-                await handleTransportFailure(error)
+                await handleTransportFailure(error, generation: generation)
             }
         }
-        inFlightRead = task
+        inFlightRead = InFlightRead(id: readID, task: task)
         #if DEBUG
             readCount += 1
         #endif
         await task.value
-        inFlightRead = nil
+
+        // Only clear the registration this call created. After a teardown/restart the field
+        // may already hold a newer read, and clearing it would unfence that read's
+        // single-flight guarantee.
+        if inFlightRead?.id == readID {
+            inFlightRead = nil
+        }
+
+        // A teardown that interleaved with this read has already stopped whatever `client`
+        // held at the time. If this read is the one that installed the transport, stop it
+        // here too so an interleave cannot leave a live process behind. `stop()` is safe to
+        // call on an already-stopped transport.
+        if installedClientForThisRead, transportGeneration != generation {
+            await readClient.stop()
+        }
     }
 
-    private func handleReadResponse(_ response: [String: Any]) async {
-        guard isEnabled else { return }
+    private func handleReadResponse(_ response: [String: Any], generation: UInt64) async {
+        guard isEnabled, transportGeneration == generation else { return }
         let accountID = await accountIDProvider()
+        // `accountIDProvider` suspends; re-check the fence before publishing.
+        guard isEnabled, transportGeneration == generation else { return }
         guard let delta = CodexProviderQuotaMapper.mapReadResponse(
             response,
             fallbackAccountID: accountID,
@@ -299,8 +340,8 @@ actor CodexProviderQuotaService {
         apply(delta)
     }
 
-    private func handleTransportFailure(_ error: Error) {
-        guard isEnabled else { return }
+    private func handleTransportFailure(_ error: Error, generation: UInt64) {
+        guard isEnabled, transportGeneration == generation else { return }
         // Keep a previously observed snapshot; it becomes stale via its own horizon rather
         // than being replaced by an error state.
         if snapshot == nil {
@@ -363,6 +404,14 @@ actor CodexProviderQuotaService {
 
         func test_subscriberCount() -> Int {
             continuations.count
+        }
+
+        func test_transportGeneration() -> UInt64 {
+            transportGeneration
+        }
+
+        func test_hasInFlightRead() -> Bool {
+            inFlightRead != nil
         }
     #endif
 }

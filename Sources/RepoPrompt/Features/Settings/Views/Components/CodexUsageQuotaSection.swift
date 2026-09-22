@@ -16,6 +16,7 @@ struct CodexUsageQuotaSection: View {
     @ObservedObject private var store: CodexQuotaUIStore
     @ObservedObject private var settingsStore = GlobalSettingsStore.shared
 
+    @MainActor
     init(store: CodexQuotaUIStore = .shared) {
         _store = ObservedObject(wrappedValue: store)
     }
@@ -26,7 +27,9 @@ struct CodexUsageQuotaSection: View {
                 get: { settingsStore.codexUsageQuotaEnabled() },
                 set: { newValue in
                     settingsStore.setCodexUsageQuotaEnabled(newValue)
-                    store.setEnabled(newValue)
+                    // Same transition the MCP write path uses, so both surfaces apply the
+                    // flag identically rather than only persisting it.
+                    CodexUsageQuotaRuntimeBridge.applyEnabled(newValue)
                 }
             )) {
                 Text("Show account usage limits")
@@ -124,10 +127,20 @@ struct CodexUsageQuotaSection: View {
 
     private func bucketView(_ section: CodexQuotaBucketSection) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(section.title)
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundColor(.primary)
+            HStack(spacing: 6) {
+                Text(section.title)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.primary)
+
+                // Bucket-level status accompanies the real per-window figures rather than
+                // overwriting them.
+                if let statusText = section.statusText {
+                    Text(statusText)
+                        .font(.caption2)
+                        .foregroundColor(.orange)
+                }
+            }
 
             ForEach(section.rows) { row in
                 windowRow(row)

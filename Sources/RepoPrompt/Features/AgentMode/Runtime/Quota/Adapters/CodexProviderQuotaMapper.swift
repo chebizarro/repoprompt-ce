@@ -64,14 +64,23 @@ enum CodexProviderQuotaMapper {
         // in the map, and admitting both would double-count it and let the two copies
         // disagree after a later sparse merge.
         let topLevelLimitID = topLevel["limitId"]?.stringValue
-        let isDuplicateOfMapEntry: Bool = if let topLevelLimitID {
-            byLimitID.keys.contains(topLevelLimitID)
-                || buckets.contains { $0.bucketID.rawValue == topLevelLimitID }
+        let admitTopLevel: Bool = if let topLevelLimitID {
+            // Identified: admit only when it names a bucket the map does not already carry.
+            !(
+                byLimitID.keys.contains(topLevelLimitID)
+                    || buckets.contains { $0.bucketID.rawValue == topLevelLimitID }
+            )
         } else {
-            false
+            // Unidentified: the schema calls this the "backward-compatible single-bucket
+            // view; mirrors the historical payload". When the map is non-empty it is a
+            // restatement of one of those buckets, and RPCE cannot tell which. Synthesizing
+            // an ID for it would double-count real usage and create a second bucket that
+            // drifts from its twin across sparse merges. It is only a bucket in its own
+            // right when the map is absent or empty.
+            buckets.isEmpty
         }
 
-        if !isDuplicateOfMapEntry {
+        if admitTopLevel {
             let bucketID = topLevelLimitID.map { ProviderQuotaBucketID(rawValue: $0) }
                 ?? ProviderQuotaBucketID.synthesizedDefault
             buckets.insert(mapBucket(topLevel, bucketID: bucketID, observedAt: observedAt), at: 0)

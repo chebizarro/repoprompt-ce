@@ -128,6 +128,116 @@ final class CodexProviderQuotaMapperTests: XCTestCase {
         XCTAssertEqual(delta.coverage, .accountWide)
     }
 
+    func testTopLevelWithoutLimitIDIsNotSynthesizedAlongsideANonEmptyMap() throws {
+        // Floor-shaped payload: 0.153.4 omits `normalModelSlug`, and the compatibility copy
+        // carries no `limitId`. It mirrors one of the map buckets, so admitting it would
+        // double-count real usage under a synthesized identity.
+        let payload = try object("""
+        {
+          "accountId": "acct-123",
+          "rateLimits": {
+            "limitName": "Codex",
+            "primary": { "usedPercent": 62, "windowDurationMins": 300 },
+            "secondary": { "usedPercent": 21, "windowDurationMins": 10080 }
+          },
+          "rateLimitsByLimitId": {
+            "codex": {
+              "limitId": "codex",
+              "limitName": "Codex",
+              "primary": { "usedPercent": 62, "windowDurationMins": 300 },
+              "secondary": { "usedPercent": 21, "windowDurationMins": 10080 }
+            }
+          }
+        }
+        """)
+
+        let delta = try XCTUnwrap(CodexProviderQuotaMapper.mapReadResponse(
+            payload,
+            fallbackAccountID: nil,
+            observedAt: observedAt
+        ))
+
+        XCTAssertEqual(delta.buckets.count, 1, "the compatibility copy is not a second bucket")
+        XCTAssertEqual(delta.buckets.first?.bucketID.rawValue, "codex")
+        XCTAssertFalse(
+            delta.buckets.contains { $0.bucketID.isSynthesized },
+            "no synthesized bucket is invented when the map already describes the account"
+        )
+    }
+
+    func testTopLevelWithoutLimitIDIsStillAdmittedWhenTheMapIsEmpty() throws {
+        // With an empty map the compatibility copy is the only description of the account.
+        let payload = try object("""
+        {
+          "rateLimits": { "primary": { "usedPercent": 33 } },
+          "rateLimitsByLimitId": {}
+        }
+        """)
+
+        let delta = try XCTUnwrap(CodexProviderQuotaMapper.mapReadResponse(
+            payload,
+            fallbackAccountID: nil,
+            observedAt: observedAt
+        ))
+        XCTAssertEqual(delta.buckets.count, 1)
+        XCTAssertTrue(try XCTUnwrap(delta.buckets.first).bucketID.isSynthesized)
+    }
+
+    // MARK: - Fields newer than the pinned floor
+
+    //
+    // `ordinaryUsageAllowed` and `normalModelSlug` arrived in Codex 0.155.1 and are absent at
+    // the 0.153.4 contract floor, so the schema gate cannot declare them (it has no
+    // "validate only when present" presence value). These tests are the only drift
+    // protection those two fields have until the floor moves; see
+    // docs/architecture/codex-app-server-schema-gate.md.
+
+    func testNewerFieldsDecodeWithTheirDeclaredShapesWhenPresent() throws {
+        let payload = try object("""
+        {
+          "accountId": "acct-123",
+          "ordinaryUsageAllowed": false,
+          "rateLimits": {
+            "limitId": "codex",
+            "normalModelSlug": "gpt-5-codex",
+            "primary": { "usedPercent": 62 }
+          }
+        }
+        """)
+
+        let delta = try XCTUnwrap(CodexProviderQuotaMapper.mapReadResponse(
+            payload,
+            fallbackAccountID: nil,
+            observedAt: observedAt
+        ))
+        XCTAssertEqual(delta.ordinaryUsageAllowed, false, "boolean at response level")
+        XCTAssertEqual(delta.buckets.first?.nativeModelAlias, "gpt-5-codex", "string at bucket level")
+        XCTAssertEqual(delta.coverage, .modelFamilies(["gpt-5-codex"]))
+    }
+
+    func testNewerFieldsWithWrongTypesAreIgnoredRatherThanCoerced() throws {
+        // A retype upstream must degrade to "unknown", never to a fabricated value.
+        let payload = try object("""
+        {
+          "ordinaryUsageAllowed": "false",
+          "rateLimits": {
+            "limitId": "codex",
+            "normalModelSlug": 42,
+            "primary": { "usedPercent": 62 }
+          }
+        }
+        """)
+
+        let delta = try XCTUnwrap(CodexProviderQuotaMapper.mapReadResponse(
+            payload,
+            fallbackAccountID: nil,
+            observedAt: observedAt
+        ))
+        XCTAssertNil(delta.ordinaryUsageAllowed, "a string is not read as a boolean")
+        XCTAssertNil(delta.buckets.first?.nativeModelAlias, "a number is not read as a slug")
+        XCTAssertEqual(delta.coverage, .accountWide)
+    }
+
     func testCreditsAndSpendControlDecodeWithRemainingSense() throws {
         let payload = try object("""
         {
