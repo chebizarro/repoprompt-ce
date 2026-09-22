@@ -10,6 +10,10 @@ final class DevinACPHeadlessAgentProvider: HeadlessAgentProvider {
     init(
         config: DevinAgentConfig,
         workspacePath: String? = nil,
+        // Test-only override. `nil` keeps the production behaviour of resolving the stored
+        // level inside `makeRequest` -- once per run, not once per provider -- so a level
+        // change still takes effect on the next run of a reused provider.
+        configuredPermissionLevel: DevinAgentToolPreferences.PermissionLevel? = nil,
         providerFactory: ProviderFactory? = nil,
         controllerFactory: @escaping ControllerFactory = { provider, request, diagnosticSink in
             try ACPAgentSessionController(
@@ -27,7 +31,14 @@ final class DevinACPHeadlessAgentProvider: HeadlessAgentProvider {
             providerName: "Devin",
             makeProvider: { resolvedProviderFactory(config) },
             makeRequest: { message, _ in
-                Self.makeRunRequest(config: config, workspacePath: workspacePath, message: message)
+                Self.makeRunRequest(
+                    config: config,
+                    workspacePath: workspacePath,
+                    message: message,
+                    // Resolved per request, not captured at init.
+                    configuredPermissionLevel: configuredPermissionLevel
+                        ?? DevinAgentToolPreferences.permissionLevel()
+                )
             },
             makeController: controllerFactory,
             beforePrompt: { controller, request in
@@ -51,9 +62,11 @@ final class DevinACPHeadlessAgentProvider: HeadlessAgentProvider {
     /// Headless runs are unattended: the bridge declines any permission request the
     /// controller does not auto-approve, so a mid-run prompt fails the whole run. The level
     /// comes from `unattendedCLIPermissionMode`/`unattendedSessionModeID` — an explicitly
-    /// configured Full Approval escalates, and every other level keeps the `auto` floor.
-    /// Both carriers are sent only when the RepoPrompt MCP server is injected; model
-    /// discovery keeps the provider default.
+    /// configured Full Approval escalates to `bypass`, and every other level sends no mode
+    /// at all. Sending nothing is NOT a floor: on a fresh session it leaves Devin's own
+    /// default, and on a resumed session it leaves whatever mode that session already had,
+    /// which can be a `bypass` set by an earlier run. Both carriers are sent only when the
+    /// RepoPrompt MCP server is injected; model discovery keeps the provider default.
     ///
     /// The launch flag alone is not enough: `devin acp` does not consume `--permission-mode`,
     /// so the mode is also applied over ACP before the prompt.

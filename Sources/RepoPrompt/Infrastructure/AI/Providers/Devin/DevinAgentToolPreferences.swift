@@ -82,18 +82,19 @@ enum DevinAgentToolPreferences {
             }
         }
 
-        /// The `--permission-mode` an unattended launch (headless ACP run, one-shot CLI
-        /// call) may use for this configured level. Unattended runs cannot surface
-        /// approval prompts — the headless bridge declines them — so only an explicit
-        /// Full Approval escalates past the managed `auto` floor. Intermediate levels
-        /// like `smart` presume a person answers the residual prompts; mapping them to
-        /// `auto` keeps unattended behavior deterministic.
         /// The ACP session mode for an unattended run, mirroring `unattendedCLIPermissionMode`.
         ///
-        /// Only an explicitly configured Full Approval escalates; every other level keeps the
-        /// floor by sending nothing. The launch flag this mirrors is inert for `devin acp`
-        /// (`sessionModeID` above), so without this an unattended Full Approval run never
-        /// actually reached the level it was configured for.
+        /// Only an explicitly configured Full Approval escalates, to `bypass`; every other
+        /// level sends nothing.
+        ///
+        /// Sending nothing is NOT a floor. On a fresh session it leaves whatever default the
+        /// agent chooses, and on a session resumed through `session/load` it leaves whatever
+        /// mode that session already had — which can be a `bypass` set by an earlier run.
+        /// Treating nil as a guaranteed floor is the mistake this note exists to prevent.
+        ///
+        /// This carrier is needed because the launch flag it mirrors is inert for `devin acp`
+        /// (see `sessionModeID`), so an unattended Full Approval run never reached the level
+        /// it was configured for.
         var unattendedSessionModeID: String? {
             switch self {
             case .fullApproval:
@@ -103,6 +104,15 @@ enum DevinAgentToolPreferences {
             }
         }
 
+        /// The `--permission-mode` an unattended launch may use for this configured level.
+        /// Unattended runs cannot surface approval prompts — the headless bridge declines
+        /// them — so only an explicit Full Approval escalates; intermediate levels like
+        /// `smart` presume a person answers the residual prompts, and mapping them to `auto`
+        /// keeps unattended behaviour deterministic.
+        ///
+        /// This is an argv floor only for the one-shot CLI path, which does honour the flag.
+        /// `devin acp` ignores it entirely, so for headless ACP runs the effective level comes
+        /// from `unattendedSessionModeID`, not from here.
         var unattendedCLIPermissionMode: String {
             switch self {
             case .fullApproval:
