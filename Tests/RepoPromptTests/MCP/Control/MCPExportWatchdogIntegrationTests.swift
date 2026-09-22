@@ -84,6 +84,8 @@ import XCTest
                     }
                     do {
                         try await Self.prepareProtectedExportFixture(fixture, endpoint: endpoint)
+                        MCPLifecycleDiagnostics.shared.beginCapture(connectionID: endpoint.connectionID)
+                        defer { MCPLifecycleDiagnostics.shared.endCapture(connectionID: endpoint.connectionID) }
                         let response = try await endpoint.callTool(
                             name: toolName,
                             arguments: [
@@ -98,6 +100,10 @@ import XCTest
                             ]
                         )
                         let payload = try Self.toolResultObject(response)
+                        XCTAssertEqual(
+                            MCPLifecycleDiagnostics.shared.snapshot(connectionID: endpoint.connectionID).map(\.phase),
+                            [.requestEntered, .handlerReturning]
+                        )
                         XCTAssertEqual(payload["code"] as? String, "tool_execution_admission_timeout")
                         XCTAssertEqual(payload["retryable"] as? Bool, true)
                         XCTAssertEqual(payload["mutation_state"] as? String, "not_applied")
@@ -250,6 +256,8 @@ import XCTest
 
                         do {
                             try await Self.prepareProtectedExportFixture(fixture, endpoint: endpoint)
+                            MCPLifecycleDiagnostics.shared.beginCapture(connectionID: connectionID)
+                            defer { MCPLifecycleDiagnostics.shared.endCapture(connectionID: connectionID) }
                             await domainHost.debugSetBeforeProviderActivationForTesting {
                                 hookedConnectionID,
                                 hookedToolName,
@@ -294,6 +302,12 @@ import XCTest
                             }
                             responseTask = activeResponseTask
                             try await hostGate.waitUntilEntered(count: 1)
+                            // Host admission/activation is not provider execution. This gate
+                            // must retain only request entry until the binding can really start.
+                            XCTAssertEqual(
+                                MCPLifecycleDiagnostics.shared.snapshot(connectionID: connectionID).map(\.phase),
+                                [.requestEntered]
+                            )
                             let preEntrySleeperCount = await clock.sleeperCount()
                             XCTAssertEqual(preEntrySleeperCount, 0)
 
@@ -303,6 +317,10 @@ import XCTest
                             )
                             await hostGate.release()
                             try await providerGate.waitUntilEntered(count: 1)
+                            XCTAssertEqual(
+                                MCPLifecycleDiagnostics.shared.snapshot(connectionID: connectionID).map(\.phase),
+                                [.requestEntered, .providerEntered]
+                            )
                             try await watchdogInstallationGate.waitUntilEntered(count: 1)
                             let preWatchdogSleeperCount = await clock.sleeperCount()
                             XCTAssertEqual(preWatchdogSleeperCount, 0)

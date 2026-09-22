@@ -13598,13 +13598,7 @@ actor ServerNetworkManager {
                                                 return try await EditFlowPerf.measure(
                                                     EditFlowPerf.Stage.MCPToolCall.resolvedProviderDispatch,
                                                     EditFlowPerf.Dimensions(toolName: toolName),
-                                                    operation: {
-                                                        MCPLifecycleDiagnostics.shared.record(.providerEntered, connectionID: connectionID, invocationID: invocationID)
-                                                        defer {
-                                                            MCPLifecycleDiagnostics.shared.record(.providerReturning, connectionID: connectionID, invocationID: invocationID)
-                                                        }
-                                                        return try await operation(providerEntryBridge)
-                                                    }
+                                                    operation: { try await operation(providerEntryBridge) }
                                                 )
                                             }
                                             guard let promptExportMutationObservation else {
@@ -14331,6 +14325,10 @@ actor ServerNetworkManager {
                                         #if DEBUG
                                             if let operation = await self.debugResolvedToolOperationOverrides[toolName] {
                                                 try providerEntryBridge?.providerWillEnter()
+                                                MCPLifecycleDiagnostics.shared.record(.providerEntered, connectionID: connectionID, invocationID: invocationID)
+                                                defer {
+                                                    MCPLifecycleDiagnostics.shared.record(.providerReturning, connectionID: connectionID, invocationID: invocationID)
+                                                }
                                                 return try await operation()
                                             }
                                         #endif
@@ -14342,7 +14340,13 @@ actor ServerNetworkManager {
                                             securityContext: invocationSecurityContext,
                                             admittedContext: admittedDomainContext,
                                             admissionDeadline: promptExportExecutionEnvelope?.admissionDeadline,
-                                            onProviderEntry: { try providerEntryBridge?.providerWillEnter() }
+                                            onProviderEntry: {
+                                                try providerEntryBridge?.providerWillEnter()
+                                                MCPLifecycleDiagnostics.shared.record(.providerEntered, connectionID: connectionID, invocationID: invocationID)
+                                            },
+                                            onProviderReturn: {
+                                                MCPLifecycleDiagnostics.shared.record(.providerReturning, connectionID: connectionID, invocationID: invocationID)
+                                            }
                                         ))
                                     }
 

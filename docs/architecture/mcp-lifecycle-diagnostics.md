@@ -30,6 +30,11 @@ or rewrite TaskLocal propagation from this stack alone.
 `MCPLifecycleDiagnostics.shared.record` observes existing tools/call entry/return,
 actual provider entry/return, watchdog cancellation/grace/late settlement,
 watchdog abort, and admitted connection removal/cancellation/stop/completion.
+Provider markers bracket the domain host's actual resolved binding, after all
+host admission/activation checks and successful `providerWillEnter`. A rejected
+admission or a throwing entry callback emits neither provider marker. The
+binding's return callback is synchronous and default-no-op for other callers;
+it runs on both success and throw, without changing settlement ownership.
 The handler-return marker sits outside the connection TaskLocal wrapper; it
 means the closure is returning, not that Swift has deallocated its task frame.
 Removal completion can precede a detached provider's late settlement.
@@ -61,7 +66,9 @@ The existing socket integration fixture covers normal return, idle EOF and
 immediate reconnect (distinct correlation), cancellation after provider entry
 with late settlement, and a manual-clock watchdog timeout where the provider
 ignores cancellation and settles after terminal socket delivery. Real lifecycle
-hooks are inspected; no new synthetic state machine is asserted. Existing
+hooks are inspected; no new synthetic state machine is asserted. The existing
+pre-activation gate asserts absence of provider markers before binding entry,
+and expired admission asserts only request entry/handler return. Existing
 protocol outcome assertions remain authoritative. These tests do not reproduce
 the allocator crash or prove release/runtime compatibility.
 
