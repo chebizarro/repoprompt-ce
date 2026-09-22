@@ -880,6 +880,14 @@ private enum AppSettingsMCPRegistry {
             read: { .bool($0.codexReasoningSummariesEnabled()) },
             write: { try $0.setCodexReasoningSummariesEnabled(requiredBool(from: $1)) }
         ),
+        boolSetting(
+            key: "agent_mode.codex_usage_quota_enabled",
+            group: "agent_mode",
+            label: "Codex Usage Quota (Observe-Only)",
+            description: "Opt-in, observe-only display of Codex account usage limits in Settings. Defaults off. When off, RepoPrompt starts no quota app-server client, process, subscription, or polling. This setting only controls visibility: quota readings never influence model routing, candidate selection, or Agent Mode behavior. Quota values themselves are not exposed over MCP.",
+            read: { .bool($0.codexUsageQuotaEnabled()) },
+            write: { try $0.setCodexUsageQuotaEnabled(requiredBool(from: $1)) }
+        ),
         stringEnumSetting(
             key: "agent_mode.provider_conversation_cleanup_action",
             group: "agent_mode",
