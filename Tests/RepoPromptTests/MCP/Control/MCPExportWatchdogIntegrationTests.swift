@@ -10,6 +10,62 @@ import XCTest
 #if DEBUG
     @MainActor
     final class MCPExportWatchdogIntegrationTests: XCTestCase {
+        func testLifecycleDiagnosticsNormalReturnIdleEOFAndImmediateReconnect() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(
+                    lease: lease,
+                    domainRuntime: AppDomainRuntimeComposition.shared.runtime
+                )
+                let endpoint = try fixture.endpointA()
+                let manager = fixture.networkManager
+                let lifecycleRemoved = expectation(description: "exact connection removal completed")
+                defer { MCPLifecycleDiagnostics.shared.endCapture(connectionID: endpoint.connectionID) }
+                var replacement: PersistentMCPTestEndpoint?
+                do {
+                    try await Self.prepareProtectedExportFixture(fixture, endpoint: endpoint)
+                    MCPLifecycleDiagnostics.shared.beginCapture(connectionID: endpoint.connectionID) { event in
+                        if event.phase == .removalFinished { lifecycleRemoved.fulfill() }
+                    }
+                    _ = try await endpoint.callTool(name: MCPWindowToolName.readFile, arguments: ["path": fixture.contextA.fileURL.path])
+                    let normal = MCPLifecycleDiagnostics.shared.snapshot(connectionID: endpoint.connectionID)
+                    XCTAssertEqual(normal.map(\.phase), [.requestEntered, .providerEntered, .providerReturning, .handlerReturning])
+                    let invocation = try XCTUnwrap(normal.first?.invocationID)
+                    XCTAssertTrue(normal.allSatisfy { $0.invocationID == invocation })
+                    endpoint.client.close()
+                    let fresh = try await PersistentMCPTestEndpoint.make(label: "lifecycle-reconnect", networkManager: manager)
+                    replacement = fresh
+                    XCTAssertNotEqual(fresh.connectionID, endpoint.connectionID)
+                    try await Self.prepareProtectedExportFixture(fixture, endpoint: fresh)
+                    MCPLifecycleDiagnostics.shared.beginCapture(connectionID: fresh.connectionID)
+                    defer { MCPLifecycleDiagnostics.shared.endCapture(connectionID: fresh.connectionID) }
+                    _ = try await fresh.callTool(name: MCPWindowToolName.readFile, arguments: ["path": fixture.contextA.fileURL.path])
+                    await fulfillment(of: [lifecycleRemoved], timeout: 5)
+                    let old = MCPLifecycleDiagnostics.shared.snapshot(connectionID: endpoint.connectionID)
+                    XCTAssertEqual(old.filter { $0.invocationID == nil }.map(\.phase), [.removalStarted, .ownedToolsCancelled, .connectionStopped, .removalFinished])
+                    let new = MCPLifecycleDiagnostics.shared.snapshot(connectionID: fresh.connectionID)
+                    XCTAssertEqual(new.map(\.phase), [.requestEntered, .providerEntered, .providerReturning, .handlerReturning])
+                    XCTAssertFalse(new.contains { $0.invocationID == invocation })
+                    XCTAssertTrue(zip(old, old.dropFirst()).allSatisfy { $0.sequence < $1.sequence })
+                    for event in old + new {
+                        XCTAssertEqual(
+                            Set(event.data.keys),
+                            event.invocationID == nil
+                                ? Set(["schema", "connection_id", "phase", "sequence"])
+                                : Set(["schema", "connection_id", "invocation_id", "phase", "sequence"])
+                        )
+                    }
+                    await Self.cleanupEndpoint(fresh, manager: manager)
+                    replacement = nil
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    if let replacement { await Self.cleanupEndpoint(replacement, manager: manager) }
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
         func testExpiredClientEnvelopeRejectsBeforeProviderAndJournalForBothPublicTools() async throws {
             for toolName in ["prompt", "workspace_context"] {
                 try await MCPSharedServerTestLease.shared.withLease { lease in
@@ -352,6 +408,7 @@ import XCTest
                     let manager = fixture.networkManager
                     let endpoint = try fixture.endpointA()
                     let connectionID = endpoint.connectionID
+                    defer { MCPLifecycleDiagnostics.shared.endCapture(connectionID: connectionID) }
                     let context = fixture.contextA
                     let domainHost = AppDomainRuntimeComposition.shared.runtime.domainHost
                     let clock = MCPExportWatchdogManualClock()
@@ -393,6 +450,7 @@ import XCTest
 
                     do {
                         try await Self.prepareProtectedExportFixture(fixture, endpoint: endpoint)
+                        MCPLifecycleDiagnostics.shared.beginCapture(connectionID: connectionID)
                         await manager.debugSeedConnectionRunRouting(
                             connectionID: connectionID,
                             runID: runID,
@@ -484,6 +542,14 @@ import XCTest
                             }
                         }
                         XCTAssertTrue(settlementPublished)
+                        let lifecycle = MCPLifecycleDiagnostics.shared.snapshot(connectionID: connectionID)
+                        let invocation = try XCTUnwrap(lifecycle.first { $0.phase == .providerEntered }?.invocationID)
+                        let phases = lifecycle.filter { $0.invocationID == invocation }.map(\.phase)
+                        XCTAssertEqual(phases.filter { $0 == .requestCancellation }.count, 1)
+                        XCTAssertEqual(phases.filter { $0 == .abandonedSettlement }.count, 1)
+                        XCTAssertTrue(phases.contains(.handlerReturning))
+                        XCTAssertLessThan(try XCTUnwrap(phases.firstIndex(of: .providerEntered)), try XCTUnwrap(phases.firstIndex(of: .requestCancellation)))
+                        XCTAssertLessThan(try XCTUnwrap(phases.firstIndex(of: .providerReturning)), try XCTUnwrap(phases.firstIndex(of: .abandonedSettlement)))
                         let completionPublished = await Self.waitUntil {
                             await observerProbe.completedCount() == 1
                         }
@@ -810,6 +876,8 @@ import XCTest
                 )
                 let manager = fixture.networkManager
                 let endpoint = try fixture.endpointA()
+                let lifecycleSettled = expectation(description: "force-disconnected provider settled")
+                defer { MCPLifecycleDiagnostics.shared.endCapture(connectionID: endpoint.connectionID) }
                 let clock = MCPExportWatchdogManualClock()
                 let providerGate = MCPExecutionIgnoringCancellationGate()
                 var firstTask: Task<PersistentMCPTestRPCResponse, Error>?
@@ -822,6 +890,9 @@ import XCTest
                 }
                 do {
                     try await Self.prepareProtectedExportFixture(fixture, endpoint: endpoint)
+                    MCPLifecycleDiagnostics.shared.beginCapture(connectionID: endpoint.connectionID) { event in
+                        if event.phase == .forceDisconnectedSettlement { lifecycleSettled.fulfill() }
+                    }
                     let firstRequestID = endpoint.client.nextRequestIDForTesting()
                     let activeFirstTask = Task {
                         try await endpoint.callTool(
@@ -888,7 +959,19 @@ import XCTest
                         // The two terminal errors were delivered before the connection closed.
                     }
 
+                    let beforeRelease = MCPLifecycleDiagnostics.shared.snapshot(connectionID: endpoint.connectionID)
+                    let invocation = try XCTUnwrap(beforeRelease.first { $0.phase == .providerEntered }?.invocationID)
+                    let phases = beforeRelease.filter { $0.invocationID == invocation }.map(\.phase)
+                    XCTAssertTrue(phases.contains(.deadlineCancellation))
+                    XCTAssertTrue(phases.contains(.cleanupGraceExpired))
+                    XCTAssertTrue(phases.contains(.watchdogAbort))
+                    XCTAssertFalse(phases.contains(.providerReturning))
                     await providerGate.release()
+                    await fulfillment(of: [lifecycleSettled], timeout: 5)
+                    let settled = MCPLifecycleDiagnostics.shared.snapshot(connectionID: endpoint.connectionID)
+                        .filter { $0.invocationID == invocation }.map(\.phase)
+                    XCTAssertLessThan(try XCTUnwrap(settled.firstIndex(of: .watchdogAbort)), try XCTUnwrap(settled.firstIndex(of: .providerReturning)))
+                    XCTAssertLessThan(try XCTUnwrap(settled.firstIndex(of: .providerReturning)), try XCTUnwrap(settled.firstIndex(of: .forceDisconnectedSettlement)))
                     await manager.debugSetResolvedToolOperationOverride(
                         toolName: MCPWindowToolName.prompt,
                         operation: nil
