@@ -28,6 +28,7 @@ final class AgentModelsPickerStatePreservationTests: XCTestCase {
             scoped.cancel()
         }
 
+        _ = NSApplication.shared // Establish AppKit's action dispatcher; do not launch a visible app.
         let view = AgentModelsPopoverView(promptViewModel: window.prompt, apiSettingsVM: window.api, windowID: -574)
         let menu = NSMenu.stableMenu(from: view.contextBuilderAgentModelMenuItems())
         let codexMenu = try XCTUnwrap(menu.items.first { $0.title == AgentProviderKind.codexExec.displayName }?.submenu)
@@ -145,7 +146,7 @@ final class AgentModelsPickerStatePreservationTests: XCTestCase {
         let files = WorkspaceFilesViewModel()
         files.setCurrentWorkspaceID(workspaceID)
         let settings = WindowSettingsManager(windowID: -574, store: store)
-        let prompt = PromptViewModel(fileManager: files, aiQueriesService: queries, apiSettingsViewModel: api, windowID: -574, settingsManager: settings)
+        let prompt = PromptViewModel(fileManager: files, aiQueriesService: queries, apiSettingsViewModel: api, windowID: -574, settingsManager: settings, refreshAvailableModelsOnInit: false)
         return Window(prompt: prompt, settings: settings, api: api)
     }
 
