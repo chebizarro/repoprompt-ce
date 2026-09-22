@@ -1254,6 +1254,9 @@ import XCTest
                             XCTAssertFalse(responseDeliveryDeadline.hasExpired, testCase.requestedName)
                             await activeFormattingGate.release()
                             _ = try await activeResponseTask.value
+                            // Receiving bytes does not join server-side send bookkeeping.
+                            // This actor hop waits for deadline retirement and delivery tracing.
+                            _ = await endpoint.connectionManager.responseDeliverySnapshot()
                             responseTask = nil
                             formattingGate = nil
                             await manager.debugSetBeforeToolResultFormattingForTesting(nil)
@@ -1725,6 +1728,9 @@ import XCTest
                         )
                         await secondFormattingGate.release()
                         let secondResponse = try await activeSecondTask.value
+                        // Join the non-suspending transport send turn before inspecting its
+                        // deadline; client receipt alone does not establish that ordering.
+                        _ = await endpoint.connectionManager.responseDeliverySnapshot()
                         XCTAssertEqual(secondResponse.id, secondRequestID, testCase.requestedName)
                         let secondResponseObject = try Self.responseObject(from: secondResponse)
                         let secondResponseResult = try XCTUnwrap(secondResponseObject["result"] as? [String: Any])
@@ -1759,6 +1765,7 @@ import XCTest
 
                         await firstFormattingGate.release()
                         let firstResponse = try await activeFirstTask.value
+                        _ = await endpoint.connectionManager.responseDeliverySnapshot()
                         XCTAssertEqual(firstResponse.id, firstRequestID, testCase.requestedName)
                         let firstResponseObject = try Self.responseObject(from: firstResponse)
                         let firstResponseResult = try XCTUnwrap(firstResponseObject["result"] as? [String: Any])
