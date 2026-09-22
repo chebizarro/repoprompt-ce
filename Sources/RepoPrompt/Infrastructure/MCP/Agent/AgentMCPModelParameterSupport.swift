@@ -22,9 +22,13 @@ enum AgentMCPModelParameterSupport {
     }
 
     static func unsupportedModelParametersMessage(for agent: AgentProviderKind) -> String {
-        agent == .devin
-            ? "Devin model and effort are combined model variants; choose one with `model_id`, not `model_parameters`."
-            : "Model parameters are not supported for \(agent.displayName)."
+        if agent == .devin {
+            return "Devin model and effort are combined model variants; choose one with `model_id`, not `model_parameters`."
+        }
+        guard agent.acpProviderID != nil else {
+            return "Model parameters are supported only for ACP providers; cannot apply them to \(agent.displayName)."
+        }
+        return "Model parameters are not supported for \(agent.displayName)."
     }
 
     /// Cursor-only synchronous definitions (static catalogue). OpenCode parameter metadata is
