@@ -85,7 +85,7 @@ enum ProviderQuotaPresenter {
             let age = relativeAge(from: observedAt, to: now)
             footnote = switch reason {
             case .resetElapsed:
-                "Last seen \(age) — a limit window has since reset, so this may be out of date"
+                "Last seen \(age) — a limit has since reset, so this may be out of date"
             case .observationAged:
                 "Last seen \(age) — may be out of date"
             }
@@ -223,8 +223,13 @@ enum ProviderQuotaPresenter {
         now: Date
     ) -> CodexQuotaWindowRow {
         var details: [String] = []
-        if let resetsAt = spendControl.resetsAt, resetsAt > now {
-            details.append("Resets \(resetText(resetsAt, now: now))")
+        let availability = ProviderQuotaSnapshot.availability(for: spendControl, now: now)
+        if let resetsAt = spendControl.resetsAt {
+            let hasReset = resetsAt <= now
+            details.append(hasReset ? "Spend limit reset \(relativeAge(from: resetsAt, to: now)) ago" : "Resets \(resetText(resetsAt, now: now))")
+        }
+        if case let .stale(observedAt, reason) = availability, reason == .observationAged {
+            details.append("last seen \(relativeAge(from: observedAt, to: now))")
         }
         return CodexQuotaWindowRow(
             id: "\(bucketID.rawValue)#spendControl",

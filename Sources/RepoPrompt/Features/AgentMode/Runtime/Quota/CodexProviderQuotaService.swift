@@ -155,6 +155,10 @@ actor CodexProviderQuotaService {
         {
             return
         }
+        // An ended notification stream discards its client. Foreground recovery must restore
+        // push observation as well as perform one read, otherwise the replacement client
+        // becomes read-only until another explicit refresh or surface reactivation.
+        startIfPossible()
         await performRead()
     }
 

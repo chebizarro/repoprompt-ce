@@ -125,6 +125,27 @@ final class CodexProviderQuotaServiceTests: XCTestCase {
         }
     }
 
+    private final class TestClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Date
+
+        init(_ value: Date) {
+            self.value = value
+        }
+
+        var now: Date {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+
+        func advance(by interval: TimeInterval) {
+            lock.lock()
+            value = value.addingTimeInterval(interval)
+            lock.unlock()
+        }
+    }
+
     /// Polls a condition instead of sleeping a fixed duration for a positive assertion.
     private func waitUntil(
         timeout: TimeInterval = 3,
@@ -478,6 +499,55 @@ final class CodexProviderQuotaServiceTests: XCTestCase {
         let secondSubscribed = await secondClient.waitForSubscription()
         XCTAssertTrue(secondSubscribed)
         XCTAssertEqual(clients.value, 2, "recovery creates one fresh isolated client")
+    }
+
+    func testForegroundRecoveryAfterEndedStreamRestoresPushObservation() async {
+        let firstClient = FakeQuotaClient(response: readResponse(primaryUsedPercent: 10))
+        let secondClient = FakeQuotaClient(response: readResponse(primaryUsedPercent: 20))
+        let clients = ClientSequence([firstClient, secondClient])
+        let clock = TestClock(observedAt)
+        let service = CodexProviderQuotaService(
+            clientFactory: { clients.next() },
+            accountIDProvider: { "acct-123" },
+            requestTimeout: 5,
+            now: { clock.now }
+        )
+
+        await service.setEnabled(true)
+        let stream = await service.subscribe()
+        _ = stream
+        let firstSubscribed = await firstClient.waitForSubscription()
+        XCTAssertTrue(firstSubscribed)
+        let firstLoaded = await waitUntil { if case .loaded = await service.test_status() { true } else { false } }
+        XCTAssertTrue(firstLoaded)
+
+        await firstClient.finishNotifications()
+        let discarded = await waitUntil { await service.test_hasTransport() == false }
+        XCTAssertTrue(discarded)
+
+        clock.advance(by: CodexProviderQuotaService.foregroundRefreshMinimumGap + 1)
+        await service.refreshOnForeground()
+
+        let secondSubscribed = await secondClient.waitForSubscription()
+        XCTAssertTrue(secondSubscribed, "foreground recovery restores the push stream")
+        await secondClient.emit(CodexAppServerClient.Notification(
+            method: "account/rateLimits/updated",
+            params: [
+                "rateLimits": .object([
+                    "limitId": .string("codex"),
+                    "primary": .object(["usedPercent": .number(88)])
+                ])
+            ]
+        ))
+
+        let pushApplied = await waitUntil {
+            if case let .loaded(snapshot) = await service.test_status() {
+                return snapshot.buckets.first?.window(role: "primary")?.percent?.rawValue == 88
+            }
+            return false
+        }
+        XCTAssertTrue(pushApplied, "the replacement client's notifications remain live")
+        XCTAssertEqual(clients.value, 2)
     }
 
     // MARK: - Equality gate

@@ -124,7 +124,8 @@ final class ProviderQuotaPresentationTests: XCTestCase {
             usedRaw: "$62",
             percent: ProviderQuotaPercent(rawValue: 38, sense: .remaining, declaredUpperBound: 100),
             resetsAt: nil,
-            isReached: false
+            isReached: false,
+            observedAt: now
         )
         let state = ProviderQuotaPresenter.viewState(
             for: .loaded(snapshot(buckets: [bucket(
@@ -158,7 +159,8 @@ final class ProviderQuotaPresentationTests: XCTestCase {
             usedRaw: "$62",
             percent: ProviderQuotaPercent(rawValue: 38, sense: .remaining, declaredUpperBound: 100),
             resetsAt: nil,
-            isReached: false
+            isReached: false,
+            observedAt: now
         )
         let state = ProviderQuotaPresenter.viewState(
             for: .loaded(snapshot(buckets: [bucket(
@@ -196,7 +198,8 @@ final class ProviderQuotaPresentationTests: XCTestCase {
             usedRaw: "$112",
             percent: ProviderQuotaPercent(rawValue: -12, sense: .remaining, declaredUpperBound: 100),
             resetsAt: nil,
-            isReached: nil
+            isReached: nil,
+            observedAt: now
         )
         let state = ProviderQuotaPresenter.viewState(
             for: .loaded(snapshot(buckets: [bucket(
@@ -350,6 +353,30 @@ final class ProviderQuotaPresentationTests: XCTestCase {
         let row = try XCTUnwrap(result.sections.first?.rows.first)
         XCTAssertEqual(row.valueText, "93% used", "the observed value is kept, not refilled")
         XCTAssertTrue(try XCTUnwrap(row.detailText).contains("Window reset"))
+        XCTAssertTrue(try XCTUnwrap(result.footnote).contains("since reset"))
+    }
+
+    func testSpendOnlyExpiredResetIsCalledOutAndMarkedStale() throws {
+        let spendControl = ProviderQuotaSpendControl(
+            limitRaw: "$100",
+            usedRaw: "$62",
+            percent: ProviderQuotaPercent(rawValue: 38, sense: .remaining, declaredUpperBound: 100),
+            resetsAt: now.addingTimeInterval(-600),
+            isReached: false,
+            observedAt: now.addingTimeInterval(-900)
+        )
+        let state = ProviderQuotaPresenter.viewState(
+            for: .loaded(snapshot(
+                buckets: [bucket(spendControl: spendControl, windows: [])],
+                observedAt: spendControl.observedAt
+            )),
+            now: now
+        )
+        let result = try loaded(state)
+        let row = try XCTUnwrap(result.sections.first?.rows.first)
+
+        XCTAssertEqual(row.valueText, "38% remaining", "the old value is retained, not synthesized")
+        XCTAssertTrue(try XCTUnwrap(row.detailText).contains("Spend limit reset"))
         XCTAssertTrue(try XCTUnwrap(result.footnote).contains("since reset"))
     }
 

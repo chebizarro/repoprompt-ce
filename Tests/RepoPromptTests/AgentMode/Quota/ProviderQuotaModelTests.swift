@@ -316,6 +316,60 @@ final class ProviderQuotaModelTests: XCTestCase {
         XCTAssertEqual(expired.percent?.rawValue, 93, "values are kept; only the label changes")
     }
 
+    func testSparseWindowUpdateRetainsSpendControlWithItsOriginalObservationTime() throws {
+        let spendControl = ProviderQuotaSpendControl(
+            limitRaw: "$100",
+            usedRaw: "$62",
+            percent: ProviderQuotaPercent(rawValue: 38, sense: .remaining, declaredUpperBound: 100),
+            resetsAt: nil,
+            isReached: false,
+            observedAt: base
+        )
+        let initial = try merged(
+            delta(
+                buckets: [ProviderQuotaBucketDelta(
+                    bucketID: ProviderQuotaBucketID(rawValue: "codex"),
+                    spendControl: spendControl,
+                    windows: [window(
+                        bucket: "codex",
+                        role: "primary",
+                        used: 10,
+                        duration: 18000,
+                        observedAt: base
+                    )]
+                )],
+                observedAt: base
+            ),
+            into: nil
+        )
+
+        let later = base.addingTimeInterval(20 * 60)
+        let updated = try merged(
+            delta(
+                buckets: [ProviderQuotaBucketDelta(
+                    bucketID: ProviderQuotaBucketID(rawValue: "codex"),
+                    windows: [window(
+                        bucket: "codex",
+                        role: "primary",
+                        used: 20,
+                        duration: 18000,
+                        observedAt: later
+                    )]
+                )],
+                source: .codexAppServerNotification,
+                observedAt: later
+            ),
+            into: initial
+        )
+
+        XCTAssertEqual(updated.buckets.first?.spendControl?.observedAt, base)
+        XCTAssertEqual(
+            updated.availability(now: later),
+            .stale(observedAt: base, reason: .observationAged),
+            "fresh window activity must not make retained spend metadata look fresh"
+        )
+    }
+
     // MARK: - Account identity
 
     func testDeltaForDifferentAccountIsReportedAsMismatch() throws {

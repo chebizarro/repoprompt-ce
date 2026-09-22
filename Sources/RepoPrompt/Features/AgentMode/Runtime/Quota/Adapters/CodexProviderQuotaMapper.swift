@@ -157,7 +157,8 @@ enum CodexProviderQuotaMapper {
             credits: mapCredits(object["credits"]?.objectValue),
             spendControl: mapSpendControl(
                 object["individualLimit"]?.objectValue,
-                isReached: object["spendControlReached"]?.boolValue
+                isReached: object["spendControlReached"]?.boolValue,
+                observedAt: observedAt
             ),
             windows: windows
         )
@@ -194,7 +195,8 @@ enum CodexProviderQuotaMapper {
 
     private static func mapSpendControl(
         _ object: [String: CodexJSONValue]?,
-        isReached: Bool?
+        isReached: Bool?,
+        observedAt: Date
     ) -> ProviderQuotaSpendControl? {
         guard let object,
               let limit = object["limit"]?.stringValue,
@@ -212,7 +214,8 @@ enum CodexProviderQuotaMapper {
                 declaredUpperBound: 100
             ),
             resetsAt: object["resetsAt"]?.doubleValue.map { Date(timeIntervalSince1970: $0) },
-            isReached: isReached
+            isReached: isReached,
+            observedAt: observedAt
         )
     }
 }

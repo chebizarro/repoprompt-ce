@@ -274,6 +274,7 @@ final class CodexProviderQuotaMapperTests: XCTestCase {
         XCTAssertEqual(spendControl.limitRaw, "$100")
         XCTAssertEqual(spendControl.usedRaw, "$62")
         XCTAssertEqual(spendControl.isReached, false)
+        XCTAssertEqual(spendControl.observedAt, observedAt)
     }
 
     func testReachedTypeSetsIsReachedAndAbsenceStaysUnknown() throws {

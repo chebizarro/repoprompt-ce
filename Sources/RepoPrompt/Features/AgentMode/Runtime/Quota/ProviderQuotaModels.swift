@@ -205,6 +205,9 @@ struct ProviderQuotaSpendControl: Equatable {
     let resetsAt: Date?
     /// Codex `spendControlReached`.
     let isReached: Bool?
+    /// When this spend-control value was last present in a provider payload. Sparse updates
+    /// that omit it retain this timestamp rather than making old data look newly observed.
+    let observedAt: Date
 }
 
 /// How a bucket is attributed to models.
@@ -328,11 +331,28 @@ struct ProviderQuotaSnapshot: Equatable, CustomStringConvertible, CustomDebugStr
         return .fresh(observedAt: window.observedAt)
     }
 
-    /// Snapshot-level freshness is the *oldest* contributing window's freshness, never the
-    /// newest, so a partially fresh snapshot is never presented as fully fresh.
+    /// Freshness for spend-control metadata, which has no declared window duration. Its
+    /// reset time is authoritative when present; otherwise use the conservative default
+    /// horizon rather than presenting a retained balance as current indefinitely.
+    static func availability(
+        for spendControl: ProviderQuotaSpendControl,
+        now: Date
+    ) -> ProviderQuotaAvailability {
+        if let resetsAt = spendControl.resetsAt, resetsAt <= now {
+            return .stale(observedAt: spendControl.observedAt, reason: .resetElapsed)
+        }
+        if now.timeIntervalSince(spendControl.observedAt) > defaultStaleHorizon {
+            return .stale(observedAt: spendControl.observedAt, reason: .observationAged)
+        }
+        return .fresh(observedAt: spendControl.observedAt)
+    }
+
+    /// Snapshot-level freshness is the *oldest* contributing reading's freshness, never the
+    /// newest, so retained metadata cannot make a partially fresh snapshot look fully fresh.
     func availability(now: Date) -> ProviderQuotaAvailability {
         let allWindows = buckets.flatMap(\.windows)
-        guard !allWindows.isEmpty else { return .unknown }
+        let allSpendControls = buckets.compactMap(\.spendControl)
+        guard !allWindows.isEmpty || !allSpendControls.isEmpty else { return .unknown }
         var result: ProviderQuotaAvailability = .fresh(observedAt: observedAt)
         var oldestObservedAt: Date?
         for window in allWindows {
@@ -349,6 +369,22 @@ struct ProviderQuotaSnapshot: Equatable, CustomStringConvertible, CustomDebugStr
             if isOlder {
                 result = windowAvailability
                 oldestObservedAt = window.observedAt
+            }
+        }
+        for spendControl in allSpendControls {
+            let spendAvailability = Self.availability(for: spendControl, now: now)
+            let isOlder = oldestObservedAt.map { spendControl.observedAt < $0 } ?? true
+            if case .stale = spendAvailability {
+                // Any stale contributor makes the snapshot stale.
+                if case .stale = result, !isOlder { continue }
+                result = spendAvailability
+                oldestObservedAt = spendControl.observedAt
+                continue
+            }
+            if case .stale = result { continue }
+            if isOlder {
+                result = spendAvailability
+                oldestObservedAt = spendControl.observedAt
             }
         }
         return result
