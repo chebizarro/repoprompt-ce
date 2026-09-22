@@ -652,6 +652,7 @@ actor ACPAgentSessionController {
                     )
                 }
             #endif
+            try validateResumedSessionPermissionPolicy(promptRequest)
             try validatePromptModelParameterSelections(promptRequest)
             response = try await sendRequest(
                 method: "session/prompt",
@@ -2155,6 +2156,36 @@ actor ACPAgentSessionController {
     /// A later parameter or mode mutation can invalidate an earlier successful
     /// selection. Admit the complete effective request using only live session
     /// authority, immediately before dispatching the prompt.
+    /// Refuse to prompt on a resumed session whose permission policy cannot be established.
+    ///
+    /// Devin advertises no `normal`/`auto` session mode, so every level below Full Approval maps
+    /// to nil and sends nothing. On a session opened with `session/load` that is not a downgrade:
+    /// the loaded session keeps whatever mode it already had, which can be a `bypass` this app
+    /// set on an earlier run. Prompting anyway would silently run the turn at a higher policy
+    /// than the one requested.
+    ///
+    /// Rather than invent a mapping for `normal` -- no advertised value carries that meaning, and
+    /// guessing one would change what the user chose -- the request is refused. A fresh session
+    /// is unaffected, because there is no inherited mode to disagree with, and an explicit Full
+    /// Approval resume still proceeds: it sends `bypass` and verifies it.
+    ///
+    /// Scoped to Devin: other ACP providers map their levels to real advertised modes, so a nil
+    /// there does not carry this ambiguity.
+    private func validateResumedSessionPermissionPolicy(_ request: ACPRunRequest) throws {
+        guard provider.providerID == .devin,
+              case .load = sessionConfiguration.mode,
+              request.sessionModeID == nil
+        else { return }
+        throw ControllerError.requestFailed(
+            """
+            This conversation was resumed, and the selected Devin permission level cannot be \
+            applied to it. Devin advertises no session mode meaning "normal", so a resumed \
+            session keeps the level it was last run with -- possibly Full Approval. Start a new \
+            conversation to run at the selected level, or select Full Approval to continue this one.
+            """
+        )
+    }
+
     private func validatePromptModelParameterSelections(_ request: ACPRunRequest) throws {
         guard provider.supportsParameterizedModelPicker,
               !request.modelParameterSelections.isEmpty

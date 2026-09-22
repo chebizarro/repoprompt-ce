@@ -125,6 +125,50 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
         )
     }
 
+    /// The decisive case: a session that was escalated to `bypass` is then resumed by a request
+    /// at a lower level, which maps to nil and so sends no mode. Prompting would silently run at
+    /// the inherited `bypass`, so the request must be refused before `session/prompt`.
+    func testLowerLevelResumeOfAnEscalatedSessionRefusesToPrompt() async throws {
+        let h = try makeHarness(startingMode: "bypass")
+        let provider = h.makeProvider(level: .normal)
+        do {
+            let stream = try await provider.streamAgentMessage(
+                AgentMessage(userMessage: "hi", resumeSessionID: "devin-headless-session")
+            )
+            for try await _ in stream {}
+            XCTFail("expected the resumed lower-level request to be refused")
+        } catch {
+            // expected
+        }
+        await provider.dispose()
+        XCTAssertFalse(
+            h.recordedMethodOrder().contains("session/prompt"),
+            "A resumed session whose policy cannot be established must not be prompted."
+        )
+    }
+
+    /// The same resume at Full Approval is still allowed: it sends `bypass` and verifies it.
+    func testFullApprovalResumeOfAnEscalatedSessionStillPrompts() async throws {
+        let h = try makeHarness(startingMode: "bypass")
+        let provider = h.makeProvider(level: .fullApproval)
+        let stream = try await provider.streamAgentMessage(
+            AgentMessage(userMessage: "hi", resumeSessionID: "devin-headless-session")
+        )
+        for try await _ in stream {}
+        await provider.dispose()
+        XCTAssertTrue(h.recordedMethodOrder().contains("session/prompt"))
+    }
+
+    /// A FRESH run at a lower level is unaffected -- there is no inherited mode to disagree with.
+    func testFreshLowerLevelRunIsUnaffectedByTheResumeGuard() async throws {
+        let h = try makeHarness()
+        try await drain(h.makeProvider(level: .normal))
+        XCTAssertTrue(
+            h.recordedMethodOrder().contains("session/prompt"),
+            "Fresh-session behaviour must be unchanged."
+        )
+    }
+
     // MARK: - Harness
 
     private struct Harness {
@@ -184,7 +228,8 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
 
     private func makeHarness(
         failModeSet: Bool = false,
-        omitModeSelector: Bool = false
+        omitModeSelector: Bool = false,
+        startingMode: String = "accept-edits"
     ) throws -> Harness {
         let workspace = try makeTestDirectory(name: "DevinHeadlessSessionModeBoundaryTests")
         let recordURL = workspace.appendingPathComponent("requests.jsonl")
@@ -220,7 +265,7 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
                  "currentValue": current_model,
                  "options": [{"value": "swe-2-high"}, {"value": "swe-2-max"}]},
             ]
-        current_mode = "accept-edits"
+        current_mode = "__STARTING_MODE__"
         current_model = "swe-2-high"
         for line in sys.stdin:
             line = line.strip()
@@ -263,6 +308,7 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
         """#
         .replacingOccurrences(of: "__FAIL_MODE_SET__", with: failModeSet ? "True" : "False")
         .replacingOccurrences(of: "__OMIT_MODE_SELECTOR__", with: omitModeSelector ? "True" : "False")
+        .replacingOccurrences(of: "__STARTING_MODE__", with: startingMode)
         let scriptURL = workspace.appendingPathComponent("devin")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
