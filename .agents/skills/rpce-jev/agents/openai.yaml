@@ -1,0 +1,4 @@
+interface:
+  display_name: "RepoPrompt CE Jev Context Judgments"
+  short_description: "Use TypeSafe Jev to pick lines, files, and skills before reading"
+  default_prompt: "Use $rpce-jev to narrow what to read for this task: rank the candidate files, find the relevant lines, and read only those ranges."
