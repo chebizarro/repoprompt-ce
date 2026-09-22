@@ -88,6 +88,21 @@ enum DevinAgentToolPreferences {
         /// Full Approval escalates past the managed `auto` floor. Intermediate levels
         /// like `smart` presume a person answers the residual prompts; mapping them to
         /// `auto` keeps unattended behavior deterministic.
+        /// The ACP session mode for an unattended run, mirroring `unattendedCLIPermissionMode`.
+        ///
+        /// Only an explicitly configured Full Approval escalates; every other level keeps the
+        /// floor by sending nothing. The launch flag this mirrors is inert for `devin acp`
+        /// (`sessionModeID` above), so without this an unattended Full Approval run never
+        /// actually reached the level it was configured for.
+        var unattendedSessionModeID: String? {
+            switch self {
+            case .fullApproval:
+                "bypass"
+            case .providerDefault, .normal, .acceptEdits, .smart:
+                nil
+            }
+        }
+
         var unattendedCLIPermissionMode: String {
             switch self {
             case .fullApproval:

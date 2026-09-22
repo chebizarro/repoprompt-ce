@@ -31,6 +31,13 @@ final class DevinACPHeadlessAgentProvider: HeadlessAgentProvider {
             },
             makeController: controllerFactory,
             beforePrompt: { controller, request in
+                // The bridge has no session-mode step of its own, so apply it here -- before
+                // the model, so an escalation is in force for the whole prompt.
+                if let mode = request.sessionModeID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !mode.isEmpty
+                {
+                    try await controller.setSessionMode(mode)
+                }
                 guard let model = request.modelString?.trimmingCharacters(in: .whitespacesAndNewlines),
                       !model.isEmpty,
                       model.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) != .orderedSame
@@ -42,11 +49,14 @@ final class DevinACPHeadlessAgentProvider: HeadlessAgentProvider {
     }
 
     /// Headless runs are unattended: the bridge declines any permission request the
-    /// controller does not auto-approve, so a mid-run prompt fails the whole run. The
-    /// launch mode therefore comes from `unattendedCLIPermissionMode` — an explicitly
-    /// configured Full Approval reaches argv as `dangerous`, and every other level keeps
-    /// the `auto` floor. The flag is only sent when the RepoPrompt MCP server is injected;
-    /// model discovery keeps the provider default.
+    /// controller does not auto-approve, so a mid-run prompt fails the whole run. The level
+    /// comes from `unattendedCLIPermissionMode`/`unattendedSessionModeID` — an explicitly
+    /// configured Full Approval escalates, and every other level keeps the `auto` floor.
+    /// Both carriers are sent only when the RepoPrompt MCP server is injected; model
+    /// discovery keeps the provider default.
+    ///
+    /// The launch flag alone is not enough: `devin acp` does not consume `--permission-mode`,
+    /// so the mode is also applied over ACP before the prompt.
     static func makeRunRequest(
         config: DevinAgentConfig,
         workspacePath: String?,
@@ -61,6 +71,9 @@ final class DevinACPHeadlessAgentProvider: HeadlessAgentProvider {
             resumeSessionID: message.resumeSessionID,
             attachments: [],
             taskLabelKind: nil,
+            sessionModeID: config.includeRepoPromptMCPServer
+                ? configuredPermissionLevel.unattendedSessionModeID
+                : nil,
             launchPermissionMode: config.includeRepoPromptMCPServer
                 ? configuredPermissionLevel.unattendedCLIPermissionMode
                 : nil

@@ -156,6 +156,79 @@ final class DevinPermissionLevelTests: XCTestCase {
         }
     }
 
+    /// Pinned at the request boundary, not the enum: an unattended Full Approval run must
+    /// carry the ACP session mode, because the launch flag it previously relied on is inert
+    /// for `devin acp`. Without this, headless Full Approval silently ran at the default
+    /// while `approvalPolicy: .declineUnsupported` failed the run on the first prompt.
+    func testHeadlessFullApprovalCarriesTheBypassSessionModeOnTheRunRequest() {
+        let request = DevinACPHeadlessAgentProvider.makeRunRequest(
+            config: DevinAgentConfig(includeRepoPromptMCPServer: true),
+            workspacePath: "/tmp/ws",
+            message: AgentMessage(userMessage: "hi"),
+            configuredPermissionLevel: .fullApproval
+        )
+        XCTAssertEqual(request.sessionModeID, "bypass")
+        // The inert flag is still carried: it remains load-bearing for the controller reuse key.
+        XCTAssertEqual(request.launchPermissionMode, "dangerous")
+    }
+
+    func testHeadlessKeepsTheFloorForEveryLevelBelowFullApproval() {
+        for level: DevinAgentToolPreferences.PermissionLevel in [.providerDefault, .normal, .acceptEdits, .smart] {
+            let request = DevinACPHeadlessAgentProvider.makeRunRequest(
+                config: DevinAgentConfig(includeRepoPromptMCPServer: true),
+                workspacePath: "/tmp/ws",
+                message: AgentMessage(userMessage: "hi"),
+                configuredPermissionLevel: level
+            )
+            XCTAssertNil(
+                request.sessionModeID,
+                "\(level) must not escalate an unattended run."
+            )
+            XCTAssertEqual(request.launchPermissionMode, "auto")
+        }
+    }
+
+    /// Model discovery and any other run without the RepoPrompt MCP server must carry neither
+    /// carrier, so a discovery probe can never escalate.
+    func testHeadlessSendsNoModeWhenTheRepoPromptServerIsNotInjected() {
+        let request = DevinACPHeadlessAgentProvider.makeRunRequest(
+            config: DevinAgentConfig(includeRepoPromptMCPServer: false),
+            workspacePath: "/tmp/ws",
+            message: AgentMessage(userMessage: "hi"),
+            configuredPermissionLevel: .fullApproval
+        )
+        XCTAssertNil(request.sessionModeID)
+        XCTAssertNil(request.launchPermissionMode)
+    }
+
+    /// KNOWN GAP, pinned deliberately rather than fixed.
+    ///
+    /// A session already placed in `bypass` retains it when a later run loads it: verified
+    /// against the real CLI 3000.11.1 -- `session/load` under both Normal-equivalent launch
+    /// forms reported `mode.currentValue == "bypass"`. Because `normal`/`providerDefault` map
+    /// to nil, a downgrade sends no reset, so the escalation survives the downgrade.
+    ///
+    /// This test pins the CURRENT behaviour so the gap cannot be closed accidentally without a
+    /// decision: the remedy requires choosing a value to reset to, and Devin's config-option
+    /// channel silently ignores `normal`/`auto`, so there may be no such value.
+    @MainActor
+    func testDowngradeSendsNoResetWhichIsWhyAResumedSessionKeepsBypass() throws {
+        let (store, _) = try makeStore(
+            securePermissions: AgentPermissionSecureStore(
+                secureStrings: DevinPermissionFakeSecureStringStore(),
+                notificationCenter: NotificationCenter()
+            )
+        )
+        store.setPermissionLevel(.devin(.fullApproval))
+        XCTAssertEqual(store.runtimePermission(for: .devin, profile: .userConfigured).acpSessionModeID, "bypass")
+
+        store.setPermissionLevel(.devin(.normal))
+        XCTAssertNil(
+            store.runtimePermission(for: .devin, profile: .userConfigured).acpSessionModeID,
+            "Downgrade sends no reset, so a resumed session keeps bypass (known gap)."
+        )
+    }
+
     @MainActor
     func testRuntimeBindingCarriesTheLaunchPermissionModeForEachProfile() throws {
         let (store, _) = try makeStore()
