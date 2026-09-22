@@ -147,6 +147,38 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
         )
     }
 
+    func testNormalResumeOfANonBypassSessionPrompts() async throws {
+        let h = try makeHarness(startingMode: "accept-edits")
+        let provider = h.makeProvider(level: .normal)
+        let stream = try await provider.streamAgentMessage(
+            AgentMessage(userMessage: "hi", resumeSessionID: "devin-headless-session")
+        )
+        for try await _ in stream {}
+        await provider.dispose()
+
+        XCTAssertTrue(
+            h.recordedMethodOrder().contains("session/prompt"),
+            "A non-bypass resumed session must not be refused merely because no mode was requested."
+        )
+    }
+
+    /// A legacy Devin runtime without a modern mode selector cannot have received a RepoPrompt
+    /// ACP bypass mutation, so Normal resume preserves the provider's existing behavior.
+    func testNormalResumeWithoutModernModeMetadataStillPrompts() async throws {
+        let h = try makeHarness(omitModeSelector: true)
+        let provider = h.makeProvider(level: .normal)
+        let stream = try await provider.streamAgentMessage(
+            AgentMessage(userMessage: "hi", resumeSessionID: "devin-headless-session")
+        )
+        for try await _ in stream {}
+        await provider.dispose()
+
+        XCTAssertTrue(
+            h.recordedMethodOrder().contains("session/prompt"),
+            "A resumed legacy session without a modern mode selector must retain its prior behavior."
+        )
+    }
+
     /// The same resume at Full Approval is still allowed: it sends `bypass` and verifies it.
     func testFullApprovalResumeOfAnEscalatedSessionStillPrompts() async throws {
         let h = try makeHarness(startingMode: "bypass")
@@ -157,6 +189,17 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
         for try await _ in stream {}
         await provider.dispose()
         XCTAssertTrue(h.recordedMethodOrder().contains("session/prompt"))
+    }
+
+    func testFullApprovalFailsBeforePromptWhenHostDoesNotAdvertiseBypass() async throws {
+        let h = try makeHarness(advertisedModes: ["accept-edits", "smart", "ask", "plan"])
+        do {
+            try await drain(h.makeProvider(level: .fullApproval))
+            XCTFail("expected Full Approval to fail when this host does not advertise bypass")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Available modes: accept-edits, smart, ask, plan"))
+        }
+        XCTAssertFalse(h.recordedMethodOrder().contains("session/prompt"))
     }
 
     /// A FRESH run at a lower level is unaffected -- there is no inherited mode to disagree with.
@@ -251,17 +294,20 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
         failModeSet: Bool = false,
         omitModeSelector: Bool = false,
         startingMode: String = "accept-edits",
+        // Verified clean Devin 3000.11.1 list; individual tests supply host-specific variants.
+        advertisedModes: [String] = ["accept-edits", "ask", "plan", "bypass"],
         loadNotFound: Bool = false
     ) throws -> Harness {
         let workspace = try makeTestDirectory(name: "DevinHeadlessSessionModeBoundaryTests")
         let recordURL = workspace.appendingPathComponent("requests.jsonl")
-        let script = #"""
+        let script = try #"""
         #!/usr/bin/env python3
         import json, os, sys
         record_path = os.environ.get("ACP_RECORD_PATH")
         FAIL_MODE_SET = __FAIL_MODE_SET__
         OMIT_MODE_SELECTOR = __OMIT_MODE_SELECTOR__
         LOAD_NOT_FOUND = __LOAD_NOT_FOUND__
+        ADVERTISED_MODES = __ADVERTISED_MODES__
         if "--help" in sys.argv:
             print("Usage: devin acp\n\nRun as an acp server over stdio")
             sys.exit(0)
@@ -282,8 +328,7 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
             return [
                 {"id": "mode", "name": "Session Mode", "category": "mode", "type": "select",
                  "currentValue": mode,
-                 "options": [{"value": "accept-edits"}, {"value": "smart"}, {"value": "ask"},
-                             {"value": "plan"}, {"value": "bypass"}]},
+                 "options": [{"value": value} for value in ADVERTISED_MODES]},
                 {"id": "model", "name": "Model", "category": "model", "type": "select",
                  "currentValue": current_model,
                  "options": [{"value": "swe-2-high"}, {"value": "swe-2-max"}]},
@@ -336,6 +381,10 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
         .replacingOccurrences(of: "__FAIL_MODE_SET__", with: failModeSet ? "True" : "False")
         .replacingOccurrences(of: "__OMIT_MODE_SELECTOR__", with: omitModeSelector ? "True" : "False")
         .replacingOccurrences(of: "__STARTING_MODE__", with: startingMode)
+        .replacingOccurrences(of: "__ADVERTISED_MODES__", with: String(
+            data: JSONSerialization.data(withJSONObject: advertisedModes),
+            encoding: .utf8
+        )!)
         .replacingOccurrences(of: "__LOAD_NOT_FOUND__", with: loadNotFound ? "True" : "False")
         let scriptURL = workspace.appendingPathComponent("devin")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)

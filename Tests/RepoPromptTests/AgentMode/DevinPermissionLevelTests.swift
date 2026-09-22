@@ -57,6 +57,28 @@ final class DevinPermissionLevelTests: XCTestCase {
         }
     }
 
+    func testDevinUsesCombinedModelVariantsInsteadOfModelParameters() {
+        let selection = ACPModelParameterSelection(
+            providerID: .devin,
+            baseModelRaw: "swe-2-max",
+            kind: .thinking,
+            configID: "effort",
+            valueRaw: "max"
+        )
+
+        XCTAssertFalse(ACPModelParameterResolver.supportsModelParameters(.devin))
+        XCTAssertNil(ACPModelParameterResolver.parameterSet(providerID: .devin, selectedModelRaw: "swe-2-max"))
+        XCTAssertEqual(
+            ACPModelParameterResolver.effectiveSelections(
+                providerID: .devin,
+                selectedModelRaw: "swe-2-max",
+                persistedSelections: [selection]
+            ),
+            []
+        )
+        XCTAssertFalse(DevinACPAgentProvider(config: DevinAgentConfig()).supportsParameterizedModelPicker)
+    }
+
     // MARK: - Provider binding identity
 
     func testPermissionLevelIDExposesAllFiveDevinOptions() {
@@ -116,7 +138,8 @@ final class DevinPermissionLevelTests: XCTestCase {
             )
         )
 
-        // Devin advertises exactly: accept-edits, smart, ask, plan, bypass.
+        // Devin can advertise different subsets by host/account/policy. These are the only
+        // explicit mappings RepoPrompt may request; the controller checks live availability.
         store.setPermissionLevel(.devin(.acceptEdits))
         XCTAssertEqual(store.runtimePermission(for: .devin, profile: .userConfigured).acpSessionModeID, "accept-edits")
         store.setPermissionLevel(.devin(.smart))

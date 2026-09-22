@@ -2153,36 +2153,48 @@ actor ACPAgentSessionController {
 
     // MARK: - Helpers
 
-    /// Refuse to prompt on a resumed session whose requested permission level cannot be applied.
+    /// Refuse only a resumed Devin session that is still at the app's known full-approval mode.
     ///
-    /// The guard fires when the request carries no session mode at all. Interactively that means
-    /// Normal or Provider Default -- Accept Edits and Smart map to the advertised `accept-edits`
-    /// and `smart`, so they are applied and are unaffected. In unattended runs every level below
-    /// Full Approval sends nothing, which is not the same as holding a floor: nothing is sent,
-    /// so nothing is enforced.
+    /// A nil request mode means Normal or Provider Default (and all unattended levels below Full
+    /// Approval). It is not a downgrade by itself: it is safe to prompt when the loaded mode is
+    /// any non-bypass value. Conversely, a loaded `bypass` session would silently retain full
+    /// approval because Devin advertises no trustworthy Normal/auto ACP equivalent to send.
     ///
-    /// Sending nothing is not a downgrade. A session opened with `session/load` keeps the mode it
-    /// already had, which can be a `bypass` this app set on an earlier run, so prompting anyway
-    /// would run the turn at a higher policy than the one requested.
-    ///
-    /// Devin advertises no value meaning `normal`/`auto`, so there is nothing to send instead;
-    /// inventing one would change the level the user selected. A fresh session is unaffected,
-    /// because there is no inherited mode to disagree with.
-    ///
-    /// Scoped to Devin so that other ACP providers are unchanged by this guard.
+    /// Runtime mode lists differ by host, account, and policy. Requested explicit modes are
+    /// already checked against the live advertised selector by `setSessionMode`; this guard only
+    /// handles the no-mode path and never guesses an ordering among the remaining values.
     private func validateResumedSessionPermissionPolicy(_ request: ACPRunRequest) throws {
         guard provider.providerID == .devin,
               case .load = sessionConfiguration.mode,
               // A load that could not find its session falls back to `session/new`, which leaves
               // `sessionConfiguration.mode` as `.load` while the session is genuinely fresh.
               // There is no inherited mode to disagree with, so the refusal must not apply.
-              fallbackResumeSessionIDForPromptClearing == nil,
-              request.sessionModeID == nil
+              fallbackResumeSessionIDForPromptClearing == nil
         else { return }
+
+        let bypass = DevinAgentToolPreferences.bypassSessionModeID
+        if request.sessionModeID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare(bypass) == .orderedSame
+        {
+            // The preceding configuration step set and verified bypass, found it current, or
+            // failed before reaching this point.
+            return
+        }
+        if let sessionModeFailureReason {
+            throw ControllerError.protocolViolation(
+                "malformed modern session mode config option: \(sessionModeFailureReason)"
+            )
+        }
+        guard let snapshot = sessionModeSnapshot,
+              snapshot.currentValue.caseInsensitiveCompare(bypass) == .orderedSame
+        else { return }
+
         throw ControllerError.requestFailed(
             """
-            Devin cannot apply the selected permission level to this resumed conversation. \
-            Start a new conversation, or choose a permission level that can be applied on resume.
+            This resumed Devin session is in `bypass` (Full Approval) and the selected permission \
+            level sends no mode that lowers it. Select Full Approval to continue at bypass, or \
+            start a new conversation.
             """
         )
     }
