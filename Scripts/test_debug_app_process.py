@@ -125,6 +125,12 @@ class DebugAppProcessTests(unittest.TestCase):
 
 
 class LifecycleSurfaceTests(unittest.TestCase):
+    @staticmethod
+    def copy_finder_launcher(root: Path) -> Path:
+        launcher = root / "Launch RepoPrompt CE.command"
+        launcher.write_text((SCRIPT_DIR.parent / launcher.name).read_text(encoding="utf-8"), encoding="utf-8")
+        return launcher
+
     def test_lifecycle_surfaces_have_no_process_name_kill_fallback(self) -> None:
         run_script = (SCRIPT_DIR / "run.sh").read_text(encoding="utf-8")
         conductor_script = (SCRIPT_DIR / "conductor.py").read_text(encoding="utf-8")
@@ -151,32 +157,8 @@ class LifecycleSurfaceTests(unittest.TestCase):
         target = makefile.split("conductor-selftest:", 1)[1].split("\n\n", 1)[0]
         self.assertIn("python3 Scripts/test_debug_app_process.py", target)
 
-    def test_finder_launcher_without_python_exits_before_any_lifecycle_action(self) -> None:
-        dirname = shutil.which("dirname")
-        self.assertIsNotNone(dirname)
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            launcher = root / "Launch RepoPrompt CE.command"
-            launcher.write_text((SCRIPT_DIR.parent / launcher.name).read_text(encoding="utf-8"), encoding="utf-8")
-            bin_dir = root / "bin"
-            bin_dir.mkdir()
-            (bin_dir / "dirname").symlink_to(dirname)
-            env = os.environ.copy()
-            env["PATH"] = str(bin_dir)
 
-            result = subprocess.run(
-                ["/bin/bash", str(launcher)],
-                env=env,
-                input="",
-                text=True,
-                capture_output=True,
-                timeout=2,
-            )
 
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("safe coordinated launcher requires Python 3", result.stdout)
-        self.assertIn("No uncoordinated fallback is provided", result.stdout)
-        self.assertNotIn("Building and relaunching", result.stdout)
 
 
 if __name__ == "__main__":

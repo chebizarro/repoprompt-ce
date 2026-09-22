@@ -1,11 +1,45 @@
 import Foundation
 
+struct AgentComposerDraftRestorationOperation: Equatable {
+    let rejectedDraftText: String
+    let draftTextBeforeRestoration: String
+    let composedDraftText: String
+    let previousRestorationEventID: UUID?
+}
+
+enum AgentComposerDraftRestorationReducer {
+    static func compose(restoredText: String, above existingText: String) -> String {
+        let restoredIsEmpty = restoredText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard !restoredIsEmpty else { return existingText }
+        let existingIsEmpty = existingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard !existingIsEmpty else { return restoredText }
+        return restoredText + "\n" + existingText
+    }
+
+    static func apply(
+        _ operation: AgentComposerDraftRestorationOperation,
+        to currentLocalText: String,
+        lastAppliedRestorationEventID: UUID?
+    ) -> String {
+        if currentLocalText == operation.composedDraftText
+            || currentLocalText == operation.draftTextBeforeRestoration
+        {
+            return operation.composedDraftText
+        }
+        if operation.previousRestorationEventID == lastAppliedRestorationEventID {
+            return compose(restoredText: operation.rejectedDraftText, above: currentLocalText)
+        }
+        return compose(restoredText: operation.composedDraftText, above: currentLocalText)
+    }
+}
+
 struct AgentDraftRestorationProps: Equatable {
     let id: UUID
     let tabID: UUID
     let text: String
     let message: String
     let strategy: AgentModeRunService.DraftRestorationStrategy
+    let operation: AgentComposerDraftRestorationOperation?
 
     init(_ event: AgentModeViewModel.DraftRestorationEvent) {
         id = event.id
@@ -13,6 +47,7 @@ struct AgentDraftRestorationProps: Equatable {
         text = event.text
         message = event.message
         strategy = event.strategy
+        operation = event.operation
     }
 }
 
@@ -178,6 +213,44 @@ struct AgentComposerSubmissionLatch {
     }
 }
 
+struct AgentComposerModelParameterControlProps: Equatable, Identifiable {
+    let providerID: ACPProviderID
+    let kind: ACPModelParameterKind
+    let baseModelRaw: String
+    let configID: String
+    let displayName: String
+    let selectedValueRaw: String
+    let selectedDisplayName: String
+    let choices: [ACPModelParameterChoice]
+    /// OpenCode only: the demand-scoped discovery key this control's metadata came from. The
+    /// setter rejects a click whose key is missing or no longer matches the current target, so a
+    /// stale menu can never retarget a selection to a different workspace/model. Cursor leaves
+    /// this nil (its catalogue is static and needs no demand-scoped authority).
+    let openCodeDiscoveryKey: OpenCodeACPModelParameterKey?
+
+    var id: String {
+        "\(kind.rawValue):\(configID)"
+    }
+
+    var accessibilityLabel: String {
+        displayName
+    }
+
+    var isSavedValueUnavailable: Bool {
+        providerID == .openCode && !choices.contains { $0.rawValue == selectedValueRaw }
+    }
+
+    var tooltip: String {
+        isSavedValueUnavailable
+            ? "Saved \(displayName) value ‘\(selectedValueRaw)’ is not currently advertised. Choose a supported value before running."
+            : displayName
+    }
+
+    var accessibilityValue: String {
+        isSavedValueUnavailable ? "\(selectedDisplayName), unavailable" : selectedDisplayName
+    }
+}
+
 struct AgentComposerProps: Equatable {
     let currentTabID: UUID?
     let submitTarget: AgentComposerSubmitTarget?
@@ -193,12 +266,15 @@ struct AgentComposerProps: Equatable {
     let isCodexRunActive: Bool
     let hasAvailableAgentProviders: Bool
     let canSendWithCurrentProvider: Bool
+    let isRoutingFreshTask: Bool
+    let isGlobalModelRouterControllingFreshTask: Bool
     let unavailableSelectedAgentMessage: String?
     let selectedAgent: AgentProviderKind
     let selectedModelRaw: String
     let selectedModelDisplayName: String
     let selectedReasoningEffortRaw: String?
     let selectedReasoningEffortDisplayName: String
+    let acpModelParameterControls: [AgentComposerModelParameterControlProps]
     let availableAgents: [AgentProviderKind]
     let isProviderPickerLockedForCurrentTab: Bool
     let lockedAgentSelectionMessage: String?
@@ -225,12 +301,15 @@ struct AgentComposerProps: Equatable {
         isCodexRunActive: false,
         hasAvailableAgentProviders: false,
         canSendWithCurrentProvider: false,
+        isRoutingFreshTask: false,
+        isGlobalModelRouterControllingFreshTask: false,
         unavailableSelectedAgentMessage: nil,
         selectedAgent: .claudeCode,
         selectedModelRaw: AgentModel.defaultModel.rawValue,
         selectedModelDisplayName: AgentModel.defaultModel.displayName,
         selectedReasoningEffortRaw: nil,
         selectedReasoningEffortDisplayName: "",
+        acpModelParameterControls: [],
         availableAgents: [],
         isProviderPickerLockedForCurrentTab: false,
         lockedAgentSelectionMessage: nil,

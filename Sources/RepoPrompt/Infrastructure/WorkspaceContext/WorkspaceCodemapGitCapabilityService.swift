@@ -47,7 +47,7 @@ struct WorkspaceCodemapPathFingerprintClient {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
         return GitBlobLStatFingerprint(
-            device: UInt64(value.st_dev),
+            device: safeDeviceID(value.st_dev),
             inode: UInt64(value.st_ino),
             mode: UInt16(value.st_mode),
             size: Int64(value.st_size),
@@ -156,22 +156,55 @@ struct WorkspaceCodemapSourceAuthorityToken: Hashable {
     }
 }
 
+struct WorkspaceCodemapSourceAuthorityRequest: Hashable {
+    let candidateRepositoryRelativePath: String
+    let observedPathGeneration: UInt64
+    let currentPathGeneration: UInt64
+    let observedIngressGeneration: UInt64
+    let currentIngressGeneration: UInt64
+}
+
+enum WorkspaceCodemapSourceAuthorityRejection: Equatable {
+    enum CapturePhase: Equatable {
+        case preRepository
+        case postRepository
+    }
+
+    case requestUnavailable
+    case candidateRequestRejected(index: Int)
+    case candidateFingerprintUnavailable(index: Int)
+    case candidateAttributesChanged(index: Int)
+    case candidatePathChanged(index: Int)
+    case registrationAuthorityChanged
+    case repositoryAuthorityChangedDuringIssuance
+    case capabilityChanged
+    case tokenIssuanceRejected(index: Int)
+    case cancelled
+    case captureFailed(
+        phase: CapturePhase,
+        reason: WorkspaceCodemapGitTransientUnavailableReason
+    )
+}
+
 struct WorkspaceCodemapGitCapabilityServiceHooks {
     var beforeResolution: @Sendable () async -> Void
     var afterFirstAuthorityCapture: @Sendable () async -> Void
     var afterSourcePathFingerprintCapture: @Sendable () async -> Void
     var afterAuthorityEvidenceOpen: @Sendable (URL) -> Void
+    var sourceAuthorityRejected: @Sendable (WorkspaceCodemapSourceAuthorityRejection) -> Void
 
     init(
         beforeResolution: @escaping @Sendable () async -> Void = {},
         afterFirstAuthorityCapture: @escaping @Sendable () async -> Void = {},
         afterSourcePathFingerprintCapture: @escaping @Sendable () async -> Void = {},
-        afterAuthorityEvidenceOpen: @escaping @Sendable (URL) -> Void = { _ in }
+        afterAuthorityEvidenceOpen: @escaping @Sendable (URL) -> Void = { _ in },
+        sourceAuthorityRejected: @escaping @Sendable (WorkspaceCodemapSourceAuthorityRejection) -> Void = { _ in }
     ) {
         self.beforeResolution = beforeResolution
         self.afterFirstAuthorityCapture = afterFirstAuthorityCapture
         self.afterSourcePathFingerprintCapture = afterSourcePathFingerprintCapture
         self.afterAuthorityEvidenceOpen = afterAuthorityEvidenceOpen
+        self.sourceAuthorityRejected = sourceAuthorityRejected
     }
 
     static let none = WorkspaceCodemapGitCapabilityServiceHooks()
@@ -185,6 +218,7 @@ actor WorkspaceCodemapGitCapabilityService {
             let activeFlightCount: Int
             let waiterCount: Int
             let resolutionObserverCount: Int
+            let authorityCaptureCount: UInt64
         }
     #endif
 
@@ -199,12 +233,35 @@ actor WorkspaceCodemapGitCapabilityService {
         let attributeGeneration: String
         let sparseGeneration: String
         let metadataGeneration: String
+
+        /// Per-file source-authority registration-to-demand windows prove the same repository/worktree
+        /// binding, not the absence of root-wide Git cache or metadata churn since registration.
+        /// Demand-window source and classification evidence is compared separately around issuance/revalidation.
+        /// Full `StableAuthority` equality remains the root-authority advancement contract used by resolution.
+        func matchesSourceAuthorityStability(of other: StableAuthority) -> Bool {
+            repositoryNamespace == other.repositoryNamespace &&
+                objectFormat == other.objectFormat &&
+                repositoryBindingEpoch == other.repositoryBindingEpoch &&
+                worktreeBindingEpoch == other.worktreeBindingEpoch
+        }
+    }
+
+    private struct SourceClassificationEvidence: Equatable {
+        let globalAttributeGeneration: String
+        let checkoutConfigurationValuesGeneration: String
     }
 
     private struct AuthorityCapture: Equatable {
         let layout: GitRepositoryLayout
         let objectFormat: GitObjectFormat
         let stableAuthority: StableAuthority
+        let sourceClassificationEvidence: SourceClassificationEvidence
+
+        func matchesSourceAuthorityStability(of other: AuthorityCapture) -> Bool {
+            layout == other.layout &&
+                objectFormat == other.objectFormat &&
+                stableAuthority.matchesSourceAuthorityStability(of: other.stableAuthority)
+        }
     }
 
     private struct RootBinding: Hashable {
@@ -260,6 +317,9 @@ actor WorkspaceCodemapGitCapabilityService {
     private var rootEpochByWaiterID: [UUID: WorkspaceCodemapRootEpoch] = [:]
     private var historicalRecords: [WorkspaceCodemapRootEpoch: HistoricalRecord] = [:]
     private var releaseOrdinal: UInt64 = 0
+    #if DEBUG
+        private var authorityCaptureCount: UInt64 = 0
+    #endif
 
     init(
         gitService: GitService = GitService(),
@@ -411,7 +471,8 @@ actor WorkspaceCodemapGitCapabilityService {
                 historicalRecordCount: historicalRecords.count,
                 activeFlightCount: flights.count,
                 waiterCount: flights.values.reduce(0) { $0 + $1.waiters.count },
-                resolutionObserverCount: resolutionObservers.count
+                resolutionObserverCount: resolutionObservers.count,
+                authorityCaptureCount: authorityCaptureCount
             )
         }
     #endif
@@ -648,80 +709,290 @@ actor WorkspaceCodemapGitCapabilityService {
         observedIngressGeneration: UInt64,
         currentIngressGeneration: UInt64
     ) async -> WorkspaceCodemapSourceAuthorityToken? {
-        guard let record = records[capability.rootEpoch],
+        let authorities = await makeSourceAuthorities(
+            capability: capability,
+            observedRootEpoch: observedRootEpoch,
+            observedRepositoryAuthority: observedRepositoryAuthority,
+            candidates: [WorkspaceCodemapSourceAuthorityRequest(
+                candidateRepositoryRelativePath: candidateRepositoryRelativePath,
+                observedPathGeneration: observedPathGeneration,
+                currentPathGeneration: currentPathGeneration,
+                observedIngressGeneration: observedIngressGeneration,
+                currentIngressGeneration: currentIngressGeneration
+            )]
+        )
+        return authorities.first ?? nil
+    }
+
+    /// Issues source-authority tokens for one bounded candidate batch under a single stable
+    /// repository-authority window. Root evidence is captured exactly twice; no-follow path
+    /// fingerprints and nested attribute evidence remain candidate-local and fail closed.
+    func makeSourceAuthorities(
+        capability: GitCodemapRootCapability,
+        observedRootEpoch: WorkspaceCodemapRootEpoch,
+        observedRepositoryAuthority: WorkspaceCodemapRepositoryAuthorityToken,
+        candidates: [WorkspaceCodemapSourceAuthorityRequest]
+    ) async -> [WorkspaceCodemapSourceAuthorityToken?] {
+        guard !candidates.isEmpty else { return [] }
+        let unavailable = [WorkspaceCodemapSourceAuthorityToken?](
+            repeating: nil,
+            count: candidates.count
+        )
+        guard !Task.isCancelled,
+              let record = records[capability.rootEpoch],
               case let .eligible(activeCapability) = record.state,
               activeCapability == capability,
-              let stableAuthority = record.stableAuthority,
-              let candidatePath = Self.safeRepositoryRelativePath(candidateRepositoryRelativePath),
-              Self.isCandidate(
-                  candidatePath,
-                  insideLoadedRootPrefix: capability.repositoryRelativeLoadedRootPrefix
-              )
-        else { return nil }
+              capability.rootEpoch == observedRootEpoch,
+              capability.repositoryAuthority == observedRepositoryAuthority,
+              let stableAuthority = record.stableAuthority
+        else {
+            hooks.sourceAuthorityRejected(Task.isCancelled ? .cancelled : .requestUnavailable)
+            return unavailable
+        }
+
         let loadedRoot = URL(fileURLWithPath: record.binding.standardizedLoadedRootPath)
+        var candidatePaths = [String?](repeating: nil, count: candidates.count)
+        var prePathFingerprints = [GitBlobLStatFingerprint?](
+            repeating: nil,
+            count: candidates.count
+        )
+        var preAttributeGenerations = [String?](repeating: nil, count: candidates.count)
+        var capturePhase = WorkspaceCodemapSourceAuthorityRejection.CapturePhase.preRepository
 
         do {
-            let prePathFingerprint = try pathFingerprintClient.fingerprint(
-                capability.repositoryLayout.workTreeRoot,
-                candidatePath
-            )
-            guard prePathFingerprint.isRegularFile else { return nil }
-            await hooks.afterSourcePathFingerprintCapture()
-            try Task.checkCancellation()
+            for index in candidates.indices {
+                let candidate = candidates[index]
+                guard candidate.observedPathGeneration == candidate.currentPathGeneration,
+                      candidate.observedIngressGeneration == candidate.currentIngressGeneration,
+                      let path = Self.safeRepositoryRelativePath(
+                          candidate.candidateRepositoryRelativePath
+                      ), Self.isCandidate(
+                          path,
+                          insideLoadedRootPrefix: capability.repositoryRelativeLoadedRootPrefix
+                      )
+                else {
+                    hooks.sourceAuthorityRejected(.candidateRequestRejected(index: index))
+                    continue
+                }
+                do {
+                    let fingerprint = try pathFingerprintClient.fingerprint(
+                        capability.repositoryLayout.workTreeRoot,
+                        path
+                    )
+                    guard fingerprint.isRegularFile else {
+                        hooks.sourceAuthorityRejected(.candidateFingerprintUnavailable(index: index))
+                        continue
+                    }
+                    candidatePaths[index] = path
+                    prePathFingerprints[index] = fingerprint
+                    await hooks.afterSourcePathFingerprintCapture()
+                } catch {
+                    hooks.sourceAuthorityRejected(.candidateFingerprintUnavailable(index: index))
+                    continue
+                }
+                try Task.checkCancellation()
+            }
+
             let preRepository = try await captureAuthority(
                 loadedRoot: loadedRoot,
                 expectedLayout: capability.repositoryLayout,
                 prefix: capability.repositoryRelativeLoadedRootPrefix
             )
-            guard preRepository.stableAuthority == stableAuthority else { return nil }
-            let preAttributes = try digestEvidence(
-                urls: Self.candidateAttributeURLs(
-                    layout: capability.repositoryLayout,
-                    candidateRepositoryRelativePath: candidatePath
-                ),
-                includeBoundedContents: true
-            )
+            guard preRepository.stableAuthority.matchesSourceAuthorityStability(of: stableAuthority) else {
+                hooks.sourceAuthorityRejected(.registrationAuthorityChanged)
+                return unavailable
+            }
+            await hooks.afterFirstAuthorityCapture()
             try Task.checkCancellation()
-            let postAttributes = try digestEvidence(
-                urls: Self.candidateAttributeURLs(
-                    layout: capability.repositoryLayout,
-                    candidateRepositoryRelativePath: candidatePath
-                ),
-                includeBoundedContents: true
+
+            for index in candidates.indices {
+                guard let path = candidatePaths[index] else { continue }
+                do {
+                    preAttributeGenerations[index] = try digestEvidence(
+                        urls: Self.candidateAttributeURLs(
+                            layout: capability.repositoryLayout,
+                            candidateRepositoryRelativePath: path
+                        ),
+                        includeBoundedContents: true
+                    )
+                } catch {
+                    hooks.sourceAuthorityRejected(.candidateAttributesChanged(index: index))
+                    candidatePaths[index] = nil
+                    prePathFingerprints[index] = nil
+                }
+                try Task.checkCancellation()
+            }
+
+            var postAttributeGenerations = [String?](repeating: nil, count: candidates.count)
+            for index in candidates.indices {
+                guard let path = candidatePaths[index],
+                      let preAttributes = preAttributeGenerations[index]
+                else { continue }
+                do {
+                    let postAttributes = try digestEvidence(
+                        urls: Self.candidateAttributeURLs(
+                            layout: capability.repositoryLayout,
+                            candidateRepositoryRelativePath: path
+                        ),
+                        includeBoundedContents: true
+                    )
+                    if postAttributes == preAttributes {
+                        postAttributeGenerations[index] = postAttributes
+                    } else {
+                        hooks.sourceAuthorityRejected(.candidateAttributesChanged(index: index))
+                    }
+                } catch {
+                    hooks.sourceAuthorityRejected(.candidateAttributesChanged(index: index))
+                    postAttributeGenerations[index] = nil
+                }
+                try Task.checkCancellation()
+            }
+
+            var postPathFingerprints = [GitBlobLStatFingerprint?](
+                repeating: nil,
+                count: candidates.count
             )
+            for index in candidates.indices {
+                guard let path = candidatePaths[index],
+                      let prePathFingerprint = prePathFingerprints[index]
+                else { continue }
+                do {
+                    let postPathFingerprint = try pathFingerprintClient.fingerprint(
+                        capability.repositoryLayout.workTreeRoot,
+                        path
+                    )
+                    #if DEBUG
+                        await hooks.afterSourcePathFingerprintCapture()
+                    #endif
+                    guard postPathFingerprint == prePathFingerprint,
+                          postPathFingerprint.isRegularFile
+                    else {
+                        hooks.sourceAuthorityRejected(.candidatePathChanged(index: index))
+                        continue
+                    }
+                    postPathFingerprints[index] = postPathFingerprint
+                } catch {
+                    hooks.sourceAuthorityRejected(.candidateFingerprintUnavailable(index: index))
+                    continue
+                }
+                try Task.checkCancellation()
+            }
+
+            capturePhase = .postRepository
             let postRepository = try await captureAuthority(
                 loadedRoot: loadedRoot,
                 expectedLayout: capability.repositoryLayout,
                 prefix: capability.repositoryRelativeLoadedRootPrefix
             )
-            let postPathFingerprint = try pathFingerprintClient.fingerprint(
-                capability.repositoryLayout.workTreeRoot,
-                candidatePath
-            )
-            guard preAttributes == postAttributes,
-                  preRepository == postRepository,
-                  postRepository.stableAuthority == stableAuthority,
-                  prePathFingerprint == postPathFingerprint,
-                  postPathFingerprint.isRegularFile,
-                  case let .eligible(currentCapability) = records[capability.rootEpoch]?.state,
+            // Candidate-local fingerprints and attributes establish source stability. Unrelated
+            // index or metadata churn must not reject the entire batch.
+            guard preRepository.sourceClassificationEvidence == postRepository.sourceClassificationEvidence,
+                  preRepository.matchesSourceAuthorityStability(of: postRepository)
+            else {
+                hooks.sourceAuthorityRejected(.repositoryAuthorityChangedDuringIssuance)
+                return unavailable
+            }
+            guard postRepository.stableAuthority.matchesSourceAuthorityStability(of: stableAuthority) else {
+                hooks.sourceAuthorityRejected(.registrationAuthorityChanged)
+                return unavailable
+            }
+            guard case let .eligible(currentCapability) = records[capability.rootEpoch]?.state,
                   currentCapability == capability
-            else { return nil }
+            else {
+                hooks.sourceAuthorityRejected(.capabilityChanged)
+                return unavailable
+            }
+            try Task.checkCancellation()
 
-            return WorkspaceCodemapSourceAuthorityToken.issue(
-                capability: capability,
-                observedRootEpoch: observedRootEpoch,
-                observedRepositoryAuthority: observedRepositoryAuthority,
-                candidateRepositoryRelativePath: candidatePath,
-                acceptedPrePathFingerprint: prePathFingerprint,
-                acceptedPostPathFingerprint: postPathFingerprint,
-                candidateAttributeGeneration: postAttributes,
-                observedPathGeneration: observedPathGeneration,
-                currentPathGeneration: currentPathGeneration,
-                observedIngressGeneration: observedIngressGeneration,
-                currentIngressGeneration: currentIngressGeneration
-            )
+            // Recheck candidate-local evidence after the repository capture.
+            for index in candidates.indices {
+                guard let path = candidatePaths[index],
+                      let expectedFingerprint = postPathFingerprints[index],
+                      let expectedAttributes = postAttributeGenerations[index]
+                else { continue }
+                do {
+                    let attributes = try digestEvidence(
+                        urls: Self.candidateAttributeURLs(
+                            layout: capability.repositoryLayout,
+                            candidateRepositoryRelativePath: path
+                        ),
+                        includeBoundedContents: true
+                    )
+                    guard attributes == expectedAttributes else {
+                        hooks.sourceAuthorityRejected(.candidateAttributesChanged(index: index))
+                        postAttributeGenerations[index] = nil
+                        continue
+                    }
+                } catch {
+                    hooks.sourceAuthorityRejected(.candidateAttributesChanged(index: index))
+                    postAttributeGenerations[index] = nil
+                    continue
+                }
+                do {
+                    let fingerprint = try pathFingerprintClient.fingerprint(
+                        capability.repositoryLayout.workTreeRoot,
+                        path
+                    )
+                    #if DEBUG
+                        await hooks.afterSourcePathFingerprintCapture()
+                    #endif
+                    guard fingerprint == expectedFingerprint, fingerprint.isRegularFile else {
+                        hooks.sourceAuthorityRejected(.candidatePathChanged(index: index))
+                        postPathFingerprints[index] = nil
+                        continue
+                    }
+                    postPathFingerprints[index] = fingerprint
+                } catch {
+                    hooks.sourceAuthorityRejected(.candidateFingerprintUnavailable(index: index))
+                    postPathFingerprints[index] = nil
+                }
+                try Task.checkCancellation()
+            }
+
+            var authorities = unavailable
+            for index in candidates.indices {
+                guard let path = candidatePaths[index],
+                      let prePathFingerprint = prePathFingerprints[index],
+                      let postPathFingerprint = postPathFingerprints[index],
+                      let attributeGeneration = postAttributeGenerations[index]
+                else { continue }
+                let candidate = candidates[index]
+                authorities[index] = WorkspaceCodemapSourceAuthorityToken.issue(
+                    capability: capability,
+                    observedRootEpoch: observedRootEpoch,
+                    observedRepositoryAuthority: observedRepositoryAuthority,
+                    candidateRepositoryRelativePath: path,
+                    acceptedPrePathFingerprint: prePathFingerprint,
+                    acceptedPostPathFingerprint: postPathFingerprint,
+                    candidateAttributeGeneration: attributeGeneration,
+                    observedPathGeneration: candidate.observedPathGeneration,
+                    currentPathGeneration: candidate.currentPathGeneration,
+                    observedIngressGeneration: candidate.observedIngressGeneration,
+                    currentIngressGeneration: candidate.currentIngressGeneration
+                )
+                if authorities[index] == nil {
+                    hooks.sourceAuthorityRejected(.tokenIssuanceRejected(index: index))
+                }
+                try Task.checkCancellation()
+            }
+            guard !Task.isCancelled,
+                  case let .eligible(finalCapability) = records[capability.rootEpoch]?.state,
+                  finalCapability == capability
+            else {
+                hooks.sourceAuthorityRejected(Task.isCancelled ? .cancelled : .capabilityChanged)
+                return unavailable
+            }
+            return authorities
         } catch {
-            return nil
+            hooks.sourceAuthorityRejected(
+                error is CancellationError
+                    ? .cancelled
+                    : .captureFailed(
+                        phase: capturePhase,
+                        reason: Self.transientReason(for: error)
+                    )
+            )
+            return unavailable
         }
     }
 
@@ -776,7 +1047,9 @@ actor WorkspaceCodemapGitCapabilityService {
                 expectedLayout: capability.repositoryLayout,
                 prefix: capability.repositoryRelativeLoadedRootPrefix
             )
-            guard preRepository.stableAuthority == stableAuthority else { return false }
+            guard preRepository.stableAuthority.matchesSourceAuthorityStability(of: stableAuthority) else {
+                return false
+            }
 
             for token in tokens {
                 let path = token.standardizedRepositoryRelativePath
@@ -811,8 +1084,11 @@ actor WorkspaceCodemapGitCapabilityService {
                 expectedLayout: capability.repositoryLayout,
                 prefix: capability.repositoryRelativeLoadedRootPrefix
             )
-            guard preRepository == postRepository,
-                  postRepository.stableAuthority == stableAuthority
+            // Demand-time classification owns current-state correctness. This pre/post window
+            // only fences classification-input races while revalidating per-file source authority.
+            guard preRepository.sourceClassificationEvidence == postRepository.sourceClassificationEvidence,
+                  preRepository.matchesSourceAuthorityStability(of: postRepository),
+                  postRepository.stableAuthority.matchesSourceAuthorityStability(of: stableAuthority)
             else { return false }
 
             for token in tokens {
@@ -951,6 +1227,9 @@ actor WorkspaceCodemapGitCapabilityService {
         expectedLayout: GitRepositoryLayout,
         prefix: String
     ) async throws -> AuthorityCapture {
+        #if DEBUG
+            authorityCaptureCount &+= 1
+        #endif
         guard let currentLayout = try await gitService.resolveGitBlobRepository(containing: loadedRoot),
               Self.repositoryRelativePrefix(
                   loadedRoot: loadedRoot,
@@ -978,6 +1257,16 @@ actor WorkspaceCodemapGitCapabilityService {
         let namespace = try GitBlobRepositoryNamespace(
             repositoryLayout: currentLayout,
             salt: namespaceSalt
+        )
+        let sourceClassificationEvidence = try SourceClassificationEvidence(
+            globalAttributeGeneration: digestEvidence(
+                urls: Self.globalAttributeURLs(
+                    layout: currentLayout,
+                    configuredAttributesFile: configuration.attributesFilePath
+                ),
+                includeBoundedContents: true
+            ),
+            checkoutConfigurationValuesGeneration: Self.checkoutConfigurationValuesDigest(configuration)
         )
 
         let layoutGeneration = try digestEvidence(
@@ -1059,7 +1348,8 @@ actor WorkspaceCodemapGitCapabilityService {
                 attributeGeneration: attributeGeneration,
                 sparseGeneration: sparseGeneration,
                 metadataGeneration: metadataGeneration
-            )
+            ),
+            sourceClassificationEvidence: sourceClassificationEvidence
         )
     }
 
@@ -1162,15 +1452,34 @@ actor WorkspaceCodemapGitCapabilityService {
         return urls
     }
 
-    private static func attributeURLs(
+    private static func globalAttributeURLs(
         layout: GitRepositoryLayout,
-        loadedRoot: URL,
         configuredAttributesFile: String?
     ) -> [URL] {
         var urls = [
             layout.gitDir.appendingPathComponent("info/attributes"),
             layout.commonDir.appendingPathComponent("info/attributes")
         ]
+        if let configuredAttributesFile {
+            // `git config --path --get core.attributesFile` expands `~` to an absolute path, while
+            // relative values remain relative and `git check-attr` resolves them from the worktree root.
+            let configuredURL = configuredAttributesFile.hasPrefix("/")
+                ? URL(fileURLWithPath: configuredAttributesFile)
+                : layout.workTreeRoot.appendingPathComponent(configuredAttributesFile)
+            urls.append(configuredURL.standardizedFileURL)
+        }
+        return urls
+    }
+
+    private static func attributeURLs(
+        layout: GitRepositoryLayout,
+        loadedRoot: URL,
+        configuredAttributesFile: String?
+    ) -> [URL] {
+        var urls = globalAttributeURLs(
+            layout: layout,
+            configuredAttributesFile: configuredAttributesFile
+        )
         var directory = layout.workTreeRoot.resolvingSymlinksInPath().standardizedFileURL
         let target = loadedRoot.resolvingSymlinksInPath().standardizedFileURL
         while true {
@@ -1180,11 +1489,6 @@ actor WorkspaceCodemapGitCapabilityService {
                 .split(separator: "/", omittingEmptySubsequences: true)
             guard let next = relative.first else { break }
             directory.appendPathComponent(String(next), isDirectory: true)
-        }
-        if let configuredAttributesFile {
-            let configuredURL = URL(fileURLWithPath: configuredAttributesFile, relativeTo: layout.commonDir)
-                .standardizedFileURL
-            urls.append(configuredURL)
         }
         return urls
     }
@@ -1442,6 +1746,21 @@ actor WorkspaceCodemapGitCapabilityService {
             if path.hasPrefix(alias + "/") { return target + path.dropFirst(alias.count) }
         }
         return path
+    }
+
+    private static func checkoutConfigurationValuesDigest(
+        _ configuration: GitCodemapAuthorityConfiguration
+    ) -> String {
+        var values = [
+            configuration.checkout.coreAutoCRLF ?? "<nil>",
+            configuration.checkout.coreEOL ?? "<nil>",
+            configuration.attributesFilePath ?? "<nil>"
+        ]
+        for key in configuration.checkout.filterDriverConfiguration.keys.sorted() {
+            values.append(key)
+            values.append(configuration.checkout.filterDriverConfiguration[key] ?? "")
+        }
+        return digestStrings(values)
     }
 
     private static func checkoutConfigurationDigest(

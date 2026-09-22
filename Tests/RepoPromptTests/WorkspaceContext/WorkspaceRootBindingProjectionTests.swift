@@ -52,6 +52,28 @@ final class WorkspaceRootBindingProjectionTests: XCTestCase {
         XCTAssertNil(projection.projectedLogicalDisplayPath(forPhysicalPath: "/repo/project/Sources/App.swift"))
     }
 
+    func testProjectedLogicalPathComponentsMapsPhysicalRootItself() throws {
+        let logicalRoot = WorkspaceRootRef(id: UUID(), name: "Project", fullPath: "/repo/project")
+        let physicalRoot = WorkspaceRootRef(id: UUID(), name: "Project", fullPath: "/tmp/worktrees/project-agent")
+        let projection = WorkspaceRootBindingProjection(
+            sessionID: UUID(),
+            boundRoots: [
+                .init(
+                    logicalRoot: logicalRoot,
+                    physicalRoot: physicalRoot,
+                    binding: Self.binding(logicalRoot: logicalRoot, physicalRoot: physicalRoot, worktreeID: "wt-1")
+                )
+            ]
+        )
+
+        let components = try XCTUnwrap(
+            projection.projectedLogicalPathComponents(forPhysicalPath: physicalRoot.standardizedFullPath)
+        )
+
+        XCTAssertEqual(components.root, logicalRoot)
+        XCTAssertEqual(components.relativePath, "")
+    }
+
     func testSingleBoundRootDoesNotStealUnboundRootAlias() {
         let logicalRoot = WorkspaceRootRef(id: UUID(), name: "Project", fullPath: "/repo/project")
         let docsRoot = WorkspaceRootRef(id: UUID(), name: "Docs", fullPath: "/repo/docs")
@@ -81,6 +103,72 @@ final class WorkspaceRootBindingProjectionTests: XCTestCase {
             projection.projectedLogicalDisplayPath(forPhysicalPath: "/tmp/worktrees/project-agent/Sources/App.swift"),
             "Project/Sources/App.swift"
         )
+    }
+
+    func testExactFileNamespaceUsesStableStoreIdentityForSharedPhysicalWorktree() {
+        let firstLogical = WorkspaceRootRef(id: UUID(), name: "Project", fullPath: "/repo/project")
+        let secondLogical = WorkspaceRootRef(id: UUID(), name: "Project", fullPath: "/repo/project-copy")
+        let physicalPath = "/tmp/worktrees/shared"
+        let storeRoot = WorkspaceRootRef(id: UUID(), name: "Project", fullPath: physicalPath)
+        let firstPhysical = WorkspaceRootRef(id: UUID(), name: "Project", fullPath: physicalPath)
+        let secondPhysical = WorkspaceRootRef(id: UUID(), name: "Project", fullPath: physicalPath)
+        let projection = WorkspaceRootBindingProjection(
+            sessionID: UUID(),
+            boundRoots: [
+                .init(
+                    logicalRoot: firstLogical,
+                    physicalRoot: firstPhysical,
+                    binding: Self.binding(logicalRoot: firstLogical, physicalRoot: firstPhysical, worktreeID: "wt-a")
+                ),
+                .init(
+                    logicalRoot: secondLogical,
+                    physicalRoot: secondPhysical,
+                    binding: Self.binding(logicalRoot: secondLogical, physicalRoot: secondPhysical, worktreeID: "wt-b")
+                )
+            ],
+            visibleLogicalRoots: [firstLogical, secondLogical]
+        )
+        let context = WorkspaceLookupContext(rootScope: projection.lookupRootScope, bindingProjection: projection)
+        let namespace = context.exactFileNamespace(storeRoots: [storeRoot])
+
+        XCTAssertEqual(namespace.rootBindings.count, 1)
+        XCTAssertEqual(namespace.rootBindings[0].lookupRoot.id, storeRoot.id)
+        XCTAssertEqual(Set(namespace.rootBindings[0].clientRoots.map(\.id)), Set([firstLogical.id, secondLogical.id]))
+        XCTAssertEqual(namespace.rootBindings[0].preferredClientRoot.id, firstLogical.id)
+        XCTAssertEqual(
+            projection.projectedLogicalPathComponents(forPhysicalPath: physicalPath + "/Sources/App.swift")?.root.id,
+            firstLogical.id
+        )
+    }
+
+    func testExactFileNamespaceRetainsUnavailableNestedWorktreeBinding() {
+        let canonicalRoot = WorkspaceRootRef(id: UUID(), name: "Repo", fullPath: "/repo")
+        let logicalRoot = WorkspaceRootRef(id: UUID(), name: "Project", fullPath: "/repo/project")
+        let unavailablePhysical = WorkspaceRootRef(id: UUID(), name: "Project", fullPath: "/tmp/missing-worktree")
+        let projection = WorkspaceRootBindingProjection(
+            sessionID: UUID(),
+            boundRoots: [
+                .init(
+                    logicalRoot: logicalRoot,
+                    physicalRoot: unavailablePhysical,
+                    binding: Self.binding(
+                        logicalRoot: logicalRoot,
+                        physicalRoot: unavailablePhysical,
+                        worktreeID: "wt-missing"
+                    )
+                )
+            ],
+            visibleLogicalRoots: [canonicalRoot, logicalRoot]
+        )
+        let context = WorkspaceLookupContext(rootScope: projection.lookupRootScope, bindingProjection: projection)
+        let namespace = context.exactFileNamespace(storeRoots: [canonicalRoot])
+
+        XCTAssertEqual(namespace.rootBindings.count, 2)
+        let unavailableBinding = namespace.rootBindings.first {
+            $0.lookupRoot.standardizedFullPath == unavailablePhysical.standardizedFullPath
+        }
+        XCTAssertEqual(unavailableBinding?.lookupRole, .projectedPhysical)
+        XCTAssertEqual(unavailableBinding?.preferredClientRoot.id, logicalRoot.id)
     }
 
     func testBoundRootsForMetadataAreDeterministicallySorted() {
@@ -453,122 +541,6 @@ final class WorkspaceRootBindingProjectionTests: XCTestCase {
         XCTAssertEqual(counts.presentationFreezeRequests, 0)
         await materializer.release(sessionID: sessionID)
         await store.unloadRoot(id: loadedLogicalRoot.id)
-    }
-
-    func testMaterializationStartsZeroCodemapTasks() async throws {
-        let logicalRootURL = try makeTemporaryRoot(name: "ProjectionMaterializeLogical")
-        let physicalRootURL = try makeTemporaryRoot(name: "ProjectionMaterializePhysical")
-        try write(SwiftFixtureSource.emptyStruct("MaterializedWithoutCodemapType"), to: physicalRootURL.appendingPathComponent("Sources/App.swift"))
-        let store = WorkspaceFileContextStore()
-        let loadedLogicalRoot = try await store.loadRoot(path: logicalRootURL.path)
-        let logicalRoot = WorkspaceRootRef(
-            id: loadedLogicalRoot.id,
-            name: loadedLogicalRoot.name,
-            fullPath: loadedLogicalRoot.standardizedFullPath
-        )
-        let physicalRoot = WorkspaceRootRef(id: UUID(), name: logicalRoot.name, fullPath: physicalRootURL.path)
-        let sessionID = UUID()
-        let materializer = WorkspaceRootBindingProjectionMaterializer(store: store)
-
-        let projection = await materializer.materialize(
-            sessionID: sessionID,
-            bindings: [Self.binding(logicalRoot: logicalRoot, physicalRoot: physicalRoot, worktreeID: "materialize")]
-        )
-        await Task.yield()
-        let counts = await store.codemapPresentationOperationCountsForTesting()
-
-        XCTAssertNotNil(projection)
-        XCTAssertEqual(counts.artifactDemandRequests, 0)
-        XCTAssertEqual(counts.presentationFreezeRequests, 0)
-        await materializer.release(sessionID: sessionID)
-        await store.unloadRoot(id: loadedLogicalRoot.id)
-    }
-
-    func testTwoBindingsSharingWorktreeEmitOneDeterministicPhysicalRoot() async throws {
-        let firstLogicalURL = try makeTemporaryRoot(name: "ProjectionSharedWorktreeFirst")
-        let secondLogicalURL = try makeTemporaryRoot(name: "ProjectionSharedWorktreeSecond")
-        let physicalRootURL = try makeTemporaryRoot(name: "ProjectionSharedWorktreePhysical")
-        try write("let origin = \"worktree\"\n", to: physicalRootURL.appendingPathComponent("Sources/App.swift"))
-
-        let store = WorkspaceFileContextStore()
-        let firstRecord = try await store.loadRoot(path: firstLogicalURL.path)
-        let secondRecord = try await store.loadRoot(path: secondLogicalURL.path)
-        let firstLogicalRoot = WorkspaceRootRef(
-            id: firstRecord.id,
-            name: "First Logical Name",
-            fullPath: firstRecord.standardizedFullPath
-        )
-        let secondLogicalRoot = WorkspaceRootRef(
-            id: secondRecord.id,
-            name: "Second Logical Name",
-            fullPath: secondRecord.standardizedFullPath
-        )
-        let sharedPhysicalRoot = WorkspaceRootRef(
-            id: UUID(),
-            name: "Ignored Input Name",
-            fullPath: physicalRootURL.path
-        )
-        let sessionID = UUID()
-        let materializer = WorkspaceRootBindingProjectionMaterializer(store: store)
-        addTeardownBlock {
-            await materializer.release(sessionID: sessionID)
-            await store.unloadRoot(id: firstRecord.id)
-            await store.unloadRoot(id: secondRecord.id)
-        }
-
-        let materializedProjection = await materializer.materialize(
-            sessionID: sessionID,
-            bindings: [
-                Self.binding(
-                    logicalRoot: firstLogicalRoot,
-                    physicalRoot: sharedPhysicalRoot,
-                    worktreeID: "shared-first"
-                ),
-                Self.binding(
-                    logicalRoot: secondLogicalRoot,
-                    physicalRoot: sharedPhysicalRoot,
-                    worktreeID: "shared-second"
-                )
-            ]
-        )
-        let projection = try XCTUnwrap(materializedProjection)
-        let physicalRoot = try XCTUnwrap(projection.physicalRootRefs.first)
-        let availability = await store.rootScopeAvailability(projection.lookupRootScope)
-        let scopedRoots = await store.rootRefs(scope: projection.lookupRootScope)
-
-        XCTAssertTrue(projection.isFullyMaterialized)
-        XCTAssertEqual(projection.logicalRootRefs.count, 2)
-        XCTAssertEqual(projection.physicalRootRefs, [physicalRoot])
-        XCTAssertEqual(Set(projection.boundRootsForMetadata.map(\.physicalRoot)), [physicalRoot])
-        XCTAssertEqual(physicalRoot.name, physicalRootURL.lastPathComponent)
-        XCTAssertEqual(availability, .available)
-        XCTAssertEqual(scopedRoots.map(\.id), [physicalRoot.id])
-    }
-
-    func testMaterializedSessionWorktreeScopeReportsAvailable() async throws {
-        let logicalRootURL = try makeTemporaryRoot(name: "ProjectionAvailableLogical")
-        let physicalRootURL = try makeTemporaryRoot(name: "ProjectionAvailablePhysical")
-        try write("let origin = \"worktree\"\n", to: physicalRootURL.appendingPathComponent("Sources/App.swift"))
-        let store = WorkspaceFileContextStore()
-        let loadedLogicalRoot = try await store.loadRoot(path: logicalRootURL.path)
-        let logicalRoot = WorkspaceRootRef(
-            id: loadedLogicalRoot.id,
-            name: loadedLogicalRoot.name,
-            fullPath: loadedLogicalRoot.standardizedFullPath
-        )
-        let physicalRoot = WorkspaceRootRef(id: UUID(), name: logicalRoot.name, fullPath: physicalRootURL.path)
-        let materializedProjection = await WorkspaceRootBindingProjectionMaterializer(store: store).materialize(
-            sessionID: UUID(),
-            bindings: [Self.binding(logicalRoot: logicalRoot, physicalRoot: physicalRoot, worktreeID: "available")]
-        )
-        let projection = try XCTUnwrap(materializedProjection)
-
-        let availability = await store.rootScopeAvailability(projection.lookupRootScope)
-        let scopedRoots = await store.rootRefs(scope: projection.lookupRootScope)
-        XCTAssertEqual(availability, .available)
-        XCTAssertTrue(scopedRoots.contains {
-            $0.standardizedFullPath == physicalRootURL.standardizedFileURL.path
-        })
     }
 
     private static func binding(

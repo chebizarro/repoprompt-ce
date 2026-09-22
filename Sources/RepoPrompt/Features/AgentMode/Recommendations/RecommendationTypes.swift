@@ -17,6 +17,7 @@ enum RecommendationProviderKind: String, CaseIterable, Identifiable {
     case claudeCode
     case codex
     case cursor
+    case grokBuild
     case openAI
 
     var id: String {
@@ -28,6 +29,7 @@ enum RecommendationProviderKind: String, CaseIterable, Identifiable {
         case .claudeCode: "Claude Code"
         case .codex: "Codex CLI"
         case .cursor: "Cursor CLI"
+        case .grokBuild: "Grok Build"
         case .openAI: "OpenAI API"
         }
     }
@@ -37,6 +39,7 @@ enum RecommendationProviderKind: String, CaseIterable, Identifiable {
         case .claudeCode: "Claude"
         case .codex: "Codex"
         case .cursor: "Cursor"
+        case .grokBuild: "Grok"
         case .openAI: "OpenAI"
         }
     }
@@ -55,17 +58,18 @@ struct ProviderStatusSnapshot {
     let claudeCodeCLI: Availability
     let codexCLI: Availability
     let cursorCLI: Availability
+    let grokBuildCLI: Availability
 
     let openAI: Availability
 
     /// Returns true if at least one provider is ready for chat.
     var hasAnyReadyProvider: Bool {
-        [claudeCodeCLI, codexCLI, cursorCLI, openAI].contains(.ready)
+        [claudeCodeCLI, codexCLI, cursorCLI, grokBuildCLI, openAI].contains(.ready)
     }
 
     /// Returns true if any CLI agent is ready.
     var hasAnyCLIAgentReady: Bool {
-        [claudeCodeCLI, codexCLI, cursorCLI].contains(.ready)
+        [claudeCodeCLI, codexCLI, cursorCLI, grokBuildCLI].contains(.ready)
     }
 
     /// Returns a copy with providers outside the enabled set treated as unavailable.
@@ -74,6 +78,7 @@ struct ProviderStatusSnapshot {
             claudeCodeCLI: enabledProviders.contains(.claudeCode) ? claudeCodeCLI : .notConfigured,
             codexCLI: enabledProviders.contains(.codex) ? codexCLI : .notConfigured,
             cursorCLI: enabledProviders.contains(.cursor) ? cursorCLI : .notConfigured,
+            grokBuildCLI: enabledProviders.contains(.grokBuild) ? grokBuildCLI : .notConfigured,
             openAI: enabledProviders.contains(.openAI) ? openAI : .notConfigured
         )
     }
@@ -397,8 +402,10 @@ enum BestPracticeProfiles {
 
     // MARK: Model Strength Summary
 
+    static let claudeCodeOpusRecommendationLabel = "Claude Opus via Claude Code's stable Opus alias (Opus 5 on the Anthropic API)"
+
     static let claudeStrengths = """
-    Claude Opus 4.6 remains great for editing-heavy work and careful file modifications. \
+    \(claudeCodeOpusRecommendationLabel) remains great for editing-heavy work and careful file modifications. \
     GPT-5.6 Sol Low via Codex CLI is now our default recommendation for explore, discovery, and lightweight agentic work.
     """
 

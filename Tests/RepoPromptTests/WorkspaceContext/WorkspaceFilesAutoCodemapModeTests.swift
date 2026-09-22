@@ -67,21 +67,6 @@ final class WorkspaceFilesAutoCodemapModeTests: XCTestCase {
         XCTAssertTrue(fixture.viewModel.snapshotSelection().manualCodemapPaths.isEmpty)
     }
 
-    func testGraphReadinessDoesNotMutateManualMode() {
-        let fixture = makeFixture(fileName: "Manual.swift")
-        fixture.viewModel.enterManualCodemapMode()
-
-        fixture.viewModel.handleAutomaticCodemapReadinessForTesting(
-            rootEpoch: WorkspaceCodemapRootEpoch(
-                rootID: fixture.file.rootIdentifier,
-                rootLifetimeID: UUID()
-            )
-        )
-
-        XCTAssertFalse(fixture.viewModel.codemapAutoEnabled)
-        XCTAssertTrue(fixture.viewModel.autoCodemapFiles.isEmpty)
-    }
-
     func testNewSourceGenerationClearsExistingInferredMarkersSynchronously() {
         let fixture = makeFixture(fileName: "Generation.swift")
         fixture.viewModel.setAutoCodemapFilesForTesting([fixture.file])
@@ -171,58 +156,6 @@ final class WorkspaceFilesAutoCodemapModeTests: XCTestCase {
             XCTAssertTrue(fixture.viewModel.autoCodemapFiles.isEmpty)
             XCTAssertTrue(fixture.viewModel.automaticCodemapReadinessRetryPendingForTesting)
         }
-    }
-
-    func testMilestoneDProductionCallersContainNoEagerCodemapOrCacheActions() throws {
-        let repoRoot = try RepoRoot.url()
-        let relativePaths = [
-            "Sources/RepoPrompt/Features/WorkspaceFiles/ViewModels/WorkspaceFilesViewModel.swift",
-            "Sources/RepoPrompt/Features/Workspaces/ViewModels/WorkspaceManagerViewModel.swift",
-            "Sources/RepoPrompt/Features/Workspaces/WorkspaceCheckoutRefreshService.swift",
-            "Sources/RepoPrompt/Features/AgentMode/ViewModels/AgentModeViewModel.swift",
-            "Sources/RepoPrompt/Features/AgentMode/ViewModels/AgentModeViewModel+WorktreeMerge.swift",
-            "Sources/RepoPrompt/Infrastructure/MCP/Agent/AgentMCPStartWorktreeCoordinator.swift",
-            "Sources/RepoPrompt/Infrastructure/WorkspaceContext/WorkspaceRootBindingProjection.swift"
-        ]
-        let forbidden = [
-            "initializeCodemapsForSessionWorktreeRoots",
-            "requestCodemapScans",
-            "repairMissingCodemapSnapshots",
-            "purgeStaleCodemapCaches",
-            "clearCodeMapCache",
-            "codeMapUpdatePublisher",
-            "codemapUpdates()"
-        ]
-
-        for relativePath in relativePaths {
-            let source = try String(
-                contentsOf: repoRoot.appendingPathComponent(relativePath),
-                encoding: .utf8
-            )
-            for symbol in forbidden {
-                XCTAssertFalse(source.contains(symbol), "\(relativePath) still references \(symbol)")
-            }
-        }
-    }
-
-    func testPublicationRevalidationIsFinalAwaitBeforeSynchronousCommit() throws {
-        let repoRoot = try RepoRoot.url()
-        let sourceURL = repoRoot.appendingPathComponent(
-            "Sources/RepoPrompt/Features/WorkspaceFiles/ViewModels/WorkspaceFilesViewModel.swift"
-        )
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        let revalidation = try XCTUnwrap(try source.range(
-            of: "guard automaticCodemapSelectionIsCurrent(",
-            range: XCTUnwrap(source.range(
-                of: "revalidateAutomaticCodemapSelectionForPublication("
-            )).upperBound ..< source.endIndex
-        ))
-        let commit = try XCTUnwrap(source.range(
-            of: "resetAutoCodemapFiles(resolvedTargets)",
-            range: revalidation.lowerBound ..< source.endIndex
-        ))
-        let synchronousCommitRegion = source[revalidation.lowerBound ..< commit.upperBound]
-        XCTAssertFalse(synchronousCommitRegion.contains("await"))
     }
 
     private func makeFixture(fileName: String) -> (

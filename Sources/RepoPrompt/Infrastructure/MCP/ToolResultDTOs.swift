@@ -36,8 +36,13 @@ enum ToolResultDTOs {
 
         static func sessionBound(from projection: WorkspaceRootBindingProjection?) -> WorktreeScopeDTO? {
             guard let projection, !projection.isEmpty else { return nil }
+            let orderedMetadataBoundRoots = projection.boundRootsForMetadata
+            var seenLabelSourcePhysicalRootIDs = Set<UUID>()
+            let labelSourceBoundRoots = orderedMetadataBoundRoots.filter { boundRoot in
+                seenLabelSourcePhysicalRootIDs.insert(boundRoot.physicalRoot.id).inserted
+            }
             let rootLabels = WorkspaceLogicalRootIdentity.labels(
-                for: projection.boundRootsForMetadata.map { boundRoot in
+                for: labelSourceBoundRoots.map { boundRoot in
                     WorkspaceLogicalRootIdentity.RootDescriptor(
                         physicalRootID: boundRoot.physicalRoot.id,
                         rootEpoch: WorkspaceCodemapRootEpoch(
@@ -48,7 +53,7 @@ enum ToolResultDTOs {
                     )
                 }
             )
-            let mappings = projection.boundRootsForMetadata.compactMap { boundRoot -> RootMappingDTO? in
+            let mappings = orderedMetadataBoundRoots.compactMap { boundRoot -> RootMappingDTO? in
                 let logicalPath = boundRoot.logicalRoot.standardizedFullPath
                 let effectivePath = boundRoot.physicalRoot.standardizedFullPath
                 guard logicalPath != effectivePath else { return nil }
@@ -280,6 +285,31 @@ enum ToolResultDTOs {
     // MARK: - Code Structure
 
     struct CodeStructureReplyDTO: Codable, Equatable {
+        enum Status: String, Codable {
+            case ok
+            case partial
+            case pending
+            case unavailable
+        }
+
+        enum SeedState: String, Codable {
+            case covered
+            case pending
+            case notIndexed = "not_indexed"
+            case excluded
+        }
+
+        enum IndexState: String, Codable {
+            case complete
+            case indexing
+        }
+
+        enum UnresolvedReason: String, Codable {
+            case notIndexedYet = "not_indexed_yet"
+            case missing
+            case tooCommon = "too_common"
+        }
+
         struct FileDTO: Codable, Equatable {
             let path: String
             let role: String
@@ -294,23 +324,49 @@ enum ToolResultDTOs {
             }
         }
 
-        struct SummaryDTO: Codable, Equatable {
-            let requestedSeeds: Int
-            let resolvedSeeds: Int
-            let returnedSeeds: Int
-            let returnedRelated: Int
-            let returnedFiles: Int
-            let codemapContentTokens: Int
-            let examinedEdges: Int
+        struct IndexDTO: Codable, Equatable {
+            let state: IndexState
+            let indexed: UInt64
+            let total: UInt64
+        }
+
+        struct SeedDTO: Codable, Equatable {
+            let path: String
+            let state: SeedState
+        }
+
+        struct NodeDTO: Codable, Equatable {
+            let path: String
+            let depth: Int
+            let seed: Bool?
+            let reachedBy: [String]
 
             private enum CodingKeys: String, CodingKey {
-                case requestedSeeds = "requested_seeds"
-                case resolvedSeeds = "resolved_seeds"
-                case returnedSeeds = "returned_seeds"
-                case returnedRelated = "returned_related"
-                case returnedFiles = "returned_files"
-                case codemapContentTokens = "codemap_content_tokens"
-                case examinedEdges = "examined_edges"
+                case path, depth, seed
+                case reachedBy = "reached_by"
+            }
+        }
+
+        struct EdgeDTO: Codable, Equatable {
+            let from: String
+            let to: String
+            let symbols: [String]
+            let ambiguous: Bool?
+        }
+
+        struct UnresolvedDTO: Codable, Equatable {
+            let from: String
+            let name: String
+            let reason: UnresolvedReason
+        }
+
+        struct TruncatedDTO: Codable, Equatable {
+            let reason: String
+            let droppedNodes: Int
+
+            private enum CodingKeys: String, CodingKey {
+                case reason
+                case droppedNodes = "dropped_nodes"
             }
         }
 
@@ -330,6 +386,32 @@ enum ToolResultDTOs {
             }
         }
 
+        struct RootDTO: Codable, Equatable {
+            let root: String
+            let status: Status
+            let index: IndexDTO
+            let updatesPending: Bool?
+            let seeds: [SeedDTO]
+            let nodes: [NodeDTO]
+            let edges: [EdgeDTO]
+            let unresolved: [UnresolvedDTO]
+            let truncated: TruncatedDTO?
+            let issues: [IssueDTO]
+
+            private enum CodingKeys: String, CodingKey {
+                case root, status, index, seeds, nodes, edges, unresolved, truncated, issues
+                case updatesPending = "updates_pending"
+            }
+        }
+
+        struct SummaryDTO: Codable, Equatable {
+            let seeds: Int
+            let nodes: Int
+            let edges: Int
+            let files: Int
+            let tokens: Int
+        }
+
         struct RetryDTO: Codable, Equatable {
             let retryable: Bool
             let retryAfterMilliseconds: Int?
@@ -340,15 +422,37 @@ enum ToolResultDTOs {
             }
         }
 
-        let status: String
+        let status: Status
+        let size: WorkspaceCodemapGraphOutputSize
+        let roots: [RootDTO]
         let files: [FileDTO]
         let summary: SummaryDTO
         let issues: [IssueDTO]
         let retry: RetryDTO?
         let worktreeScope: WorktreeScopeDTO?
 
+        init(
+            status: Status,
+            size: WorkspaceCodemapGraphOutputSize,
+            roots: [RootDTO],
+            files: [FileDTO],
+            summary: SummaryDTO,
+            issues: [IssueDTO],
+            retry: RetryDTO?,
+            worktreeScope: WorktreeScopeDTO?
+        ) {
+            self.status = status
+            self.size = size
+            self.roots = roots
+            self.files = files
+            self.summary = summary
+            self.issues = issues
+            self.retry = retry
+            self.worktreeScope = worktreeScope
+        }
+
         private enum CodingKeys: String, CodingKey {
-            case status, files, summary, issues, retry
+            case status, size, roots, files, summary, issues, retry
             case worktreeScope = "worktree_scope"
         }
     }
@@ -983,11 +1087,69 @@ enum ToolResultDTOs {
             let patch: String
         }
 
+        struct OracleLaneErrorDTO: Codable, Equatable {
+            let code: String
+            let message: String
+            let partialResponse: String?
+
+            private enum CodingKeys: String, CodingKey {
+                case code
+                case message
+                case partialResponse = "partial_response"
+            }
+        }
+
+        struct OracleLaneDTO: Codable, Equatable {
+            struct ExecutionProfileDTO: Codable, Equatable {
+                let providerID: String
+                let modelID: String
+                let effectiveReasoningEffort: String?
+
+                private enum CodingKeys: String, CodingKey {
+                    case providerID = "provider_id"
+                    case modelID = "model_id"
+                    case effectiveReasoningEffort = "effective_reasoning_effort"
+                }
+            }
+
+            let laneIndex: Int
+            let role: String
+            let chatID: String
+            let providerID: String?
+            let modelID: String
+            let status: String
+            let executionProfile: ExecutionProfileDTO?
+            let response: String?
+            let error: OracleLaneErrorDTO?
+
+            private enum CodingKeys: String, CodingKey {
+                case laneIndex = "lane_index"
+                case role
+                case chatID = "chat_id"
+                case providerID = "provider_id"
+                case modelID = "model_id"
+                case status
+                case executionProfile = "execution_profile"
+                case response
+                case error
+            }
+        }
+
+        struct OracleWarningDTO: Codable, Equatable {
+            let code: String
+            let message: String
+        }
+
         let chatID: String?
         let mode: String?
         let response: String?
         let diffs: [Diff]?
         let errors: [String]?
+        let oracleGroupID: String?
+        let status: String?
+        let oracleCount: Int?
+        let oracleResults: [OracleLaneDTO]?
+        let warnings: [OracleWarningDTO]?
 
         private enum CodingKeys: String, CodingKey {
             case chatID = "chat_id"
@@ -996,14 +1158,35 @@ enum ToolResultDTOs {
             case diffs
             case patches
             case errors
+            case oracleGroupID = "oracle_group_id"
+            case status
+            case oracleCount = "oracle_count"
+            case oracleResults = "oracle_results"
+            case warnings
         }
 
-        init(chatID: String?, mode: String?, response: String?, diffs: [Diff]?, errors: [String]?) {
+        init(
+            chatID: String?,
+            mode: String?,
+            response: String?,
+            diffs: [Diff]?,
+            errors: [String]?,
+            oracleGroupID: String? = nil,
+            status: String? = nil,
+            oracleCount: Int? = nil,
+            oracleResults: [OracleLaneDTO]? = nil,
+            warnings: [OracleWarningDTO]? = nil
+        ) {
             self.chatID = chatID
             self.mode = mode
             self.response = response
             self.diffs = diffs
             self.errors = errors
+            self.oracleGroupID = oracleGroupID
+            self.status = status
+            self.oracleCount = oracleCount
+            self.oracleResults = oracleResults
+            self.warnings = warnings
         }
 
         init(from decoder: Decoder) throws {
@@ -1017,6 +1200,11 @@ enum ToolResultDTOs {
                 diffs = try container.decodeIfPresent([Diff].self, forKey: .patches)
             }
             errors = try container.decodeIfPresent([String].self, forKey: .errors)
+            oracleGroupID = try container.decodeIfPresent(String.self, forKey: .oracleGroupID)
+            status = try container.decodeIfPresent(String.self, forKey: .status)
+            oracleCount = try container.decodeIfPresent(Int.self, forKey: .oracleCount)
+            oracleResults = try container.decodeIfPresent([OracleLaneDTO].self, forKey: .oracleResults)
+            warnings = try container.decodeIfPresent([OracleWarningDTO].self, forKey: .warnings)
         }
 
         func encode(to encoder: Encoder) throws {
@@ -1026,6 +1214,11 @@ enum ToolResultDTOs {
             try container.encodeIfPresent(response, forKey: .response)
             try container.encodeIfPresent(diffs, forKey: .diffs)
             try container.encodeIfPresent(errors, forKey: .errors)
+            try container.encodeIfPresent(oracleGroupID, forKey: .oracleGroupID)
+            try container.encodeIfPresent(status, forKey: .status)
+            try container.encodeIfPresent(oracleCount, forKey: .oracleCount)
+            try container.encodeIfPresent(oracleResults, forKey: .oracleResults)
+            try container.encodeIfPresent(warnings, forKey: .warnings)
         }
     }
 

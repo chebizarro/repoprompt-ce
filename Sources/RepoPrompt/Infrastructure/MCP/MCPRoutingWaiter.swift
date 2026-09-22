@@ -116,6 +116,10 @@ actor MCPRoutingWaiter {
         }
     }
 
+    func currentTerminalOutcome(runID: UUID) -> MCPRoutingWaitOutcome? {
+        waitersByRunID[runID]?.terminalOutcome
+    }
+
     /// Legacy compatibility API. Observation deliberately does not extend this absolute deadline.
     func waitUntilRouted(runID: UUID, timeoutSeconds: TimeInterval) async -> Bool {
         await waitForRoutingOutcome(runID: runID, timeoutSeconds: timeoutSeconds).routed
@@ -489,6 +493,10 @@ actor MCPRoutingWaiter {
 extension MCPRoutingWaiter {
     static func register(runID: UUID) async {
         await shared.register(runID: runID)
+    }
+
+    static func currentTerminalOutcome(runID: UUID) async -> MCPRoutingWaitOutcome? {
+        await shared.currentTerminalOutcome(runID: runID)
     }
 
     static func waitUntilRouted(runID: UUID, timeoutSeconds: TimeInterval) async -> Bool {

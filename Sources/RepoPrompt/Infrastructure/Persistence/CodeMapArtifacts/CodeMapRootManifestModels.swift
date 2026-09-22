@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import RepoPromptCodeMapCore
 
 enum CodeMapRootManifestModelError: Error, Equatable {
     case invalidNamespace
@@ -171,7 +172,9 @@ struct CodeMapRootManifestNamespace: Hashable {
 
     func contains(repositoryRelativePath: String) -> Bool {
         guard Self.isRepositoryRelativePath(repositoryRelativePath, allowEmpty: false) else { return false }
-        if repositoryRelativeLoadedRootPrefix.isEmpty { return true }
+        if repositoryRelativeLoadedRootPrefix.isEmpty {
+            return true
+        }
         return repositoryRelativePath.hasPrefix(repositoryRelativeLoadedRootPrefix + "/")
     }
 
@@ -181,7 +184,9 @@ struct CodeMapRootManifestNamespace: Hashable {
               !value.hasPrefix("/"),
               !value.hasSuffix("/")
         else { return false }
-        if value.isEmpty { return allowEmpty }
+        if value.isEmpty {
+            return allowEmpty
+        }
         return value.split(separator: "/", omittingEmptySubsequences: false).allSatisfy {
             !$0.isEmpty && $0 != "." && $0 != ".."
         }
@@ -548,6 +553,28 @@ struct CodeMapRootManifestRecord: Hashable {
         self.construction = construction
     }
 
+    func restampedVerifiedAuthority(
+        namespace: CodeMapRootManifestNamespace,
+        authority: CodeMapRootManifestAuthority
+    ) throws -> Self {
+        guard isVerifiedForPublication else {
+            throw CodeMapRootManifestModelError.corruptRecord
+        }
+        return try Self(
+            namespace: namespace,
+            repositoryRelativePath: repositoryRelativePath,
+            locatorIdentity: locatorIdentity,
+            artifactKey: artifactKey,
+            gitMode: gitMode,
+            outcome: outcome,
+            contributionEnvelope: contributionEnvelope,
+            legacyContributionIdentity: legacyContributionIdentity,
+            authority: authority,
+            bindingGeneration: bindingGeneration,
+            construction: .verifiedAssociation
+        )
+    }
+
     fileprivate static func decodeCanonical(
         from reader: inout CodeMapRootManifestReader,
         namespace: CodeMapRootManifestNamespace,
@@ -805,9 +832,7 @@ enum CodeMapRootManifestCodec {
             throw CodeMapRootManifestDecodeFailure.invalidEnvelope
         }
         let payloadEnd = data.count - checksumByteCount
-        guard Data(SHA256.hash(data: data.prefix(payloadEnd))) == data.suffix(checksumByteCount) else {
-            throw CodeMapRootManifestDecodeFailure.checksumMismatch
-        }
+        _ = try validatedContentChecksum(data)
         var reader = CodeMapRootManifestReader(data: data.prefix(payloadEnd))
         let storedMagic: Data
         do {
@@ -912,6 +937,20 @@ enum CodeMapRootManifestCodec {
             }
         }
         return snapshot
+    }
+
+    static func validatedContentChecksum(_ data: Data) throws -> Data {
+        guard data.count >= checksumByteCount,
+              data.count <= maximumEncodedByteCount
+        else {
+            throw CodeMapRootManifestDecodeFailure.invalidEnvelope
+        }
+        let payloadEnd = data.count - checksumByteCount
+        let checksum = Data(data.suffix(checksumByteCount))
+        guard Data(SHA256.hash(data: data.prefix(payloadEnd))) == checksum else {
+            throw CodeMapRootManifestDecodeFailure.checksumMismatch
+        }
+        return checksum
     }
 }
 

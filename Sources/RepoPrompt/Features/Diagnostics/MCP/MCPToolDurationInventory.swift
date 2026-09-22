@@ -32,10 +32,11 @@ import RepoPromptShared
         static let perToolTimeoutOverridesSupported = false
         static let intentionalPhaseB3Deviation = true
         static let deviationReason = "Codex applies tool_timeout_sec to every tool on the RepoPromptCE server, while Oracle and Context Builder remain synchronous and can legitimately run for an hour or more."
-        static let activeTimeoutSemantics = "RepoPromptCE intentionally preserves a \(MCPTimeoutPolicy.codexServerActiveTimeoutSeconds.formatted())-active-second per-server timeout. The separate dispatch-boundary execution contract bounds computational/local tools expected to finish within \(MCPTimeoutPolicy.boundedToolExecutionDeadlineSeconds) seconds and switch-producing manage_workspaces calls within \(MCPTimeoutPolicy.workspaceSwitchToolExecutionDeadlineSeconds) seconds; other workspace/VCS lifecycle actions retain explicit cancellable exemptions."
+        static let activeTimeoutSemantics = "RepoPromptCE intentionally preserves a \(MCPTimeoutPolicy.codexServerActiveTimeoutSeconds.formatted())-active-second per-server timeout. The separate dispatch-boundary execution contract bounds computational/local tools expected to finish within \(MCPTimeoutPolicy.boundedToolExecutionDeadlineSeconds) seconds, Finder Trash file_actions within \(MCPTimeoutPolicy.fileActionTrashExecutionDeadlineSeconds) seconds, and switch-producing manage_workspaces calls within \(MCPTimeoutPolicy.workspaceSwitchToolExecutionDeadlineSeconds) seconds; other workspace/VCS lifecycle actions retain explicit cancellable exemptions."
         static let wallClockMayBeLongerDuringElicitation = true
         static let customUIWaitsAreElicitation = false
         static let boundedExecutionDeadlineSeconds = MCPTimeoutPolicy.boundedToolExecutionDeadline.mcpSeconds
+        static let fileActionTrashExecutionDeadlineSeconds = MCPTimeoutPolicy.fileActionTrashExecutionDeadline.mcpSeconds
         static let workspaceSwitchExecutionDeadlineSeconds = MCPTimeoutPolicy.workspaceSwitchToolExecutionDeadline.mcpSeconds
         static let boundedCleanupGraceSeconds = MCPTimeoutPolicy.boundedToolCancellationCleanupGrace.mcpSeconds
 
@@ -94,6 +95,7 @@ import RepoPromptShared
                 "wall_clock_may_be_longer_during_elicitation": wallClockMayBeLongerDuringElicitation,
                 "custom_ui_waits_are_mcp_elicitation": customUIWaitsAreElicitation,
                 "bounded_execution_deadline_seconds": boundedExecutionDeadlineSeconds,
+                "file_action_trash_execution_deadline_seconds": fileActionTrashExecutionDeadlineSeconds,
                 "workspace_switch_execution_deadline_seconds": workspaceSwitchExecutionDeadlineSeconds,
                 "bounded_cleanup_grace_seconds": boundedCleanupGraceSeconds,
                 "preserved_long_synchronous_tools": preservedLongSynchronousToolNames,
@@ -148,10 +150,22 @@ import RepoPromptShared
                 MCPTimeoutPolicy.applyEditsApprovalTimeoutSeconds
             case MCPWindowToolName.manageWorktree:
                 MCPTimeoutPolicy.worktreeMergeApprovalTimeoutSeconds
+            case MCPWindowToolName.getCodeStructure:
+                Double(workspaceCodemapProductionDemandWaitMilliseconds) / 1000
             default:
                 nil
             }
-            let conditionalExecutionOverrides: [ConditionalExecutionOverride] = if toolName == MCPGlobalToolName.manageWorkspaces {
+            let conditionalExecutionOverrides: [ConditionalExecutionOverride] = if toolName == MCPWindowToolName.fileActions {
+                [
+                    ConditionalExecutionOverride(
+                        action: "delete",
+                        condition: "always",
+                        executionDeadlineSeconds: fileActionTrashExecutionDeadlineSeconds,
+                        cleanupGraceSeconds: boundedCleanupGraceSeconds,
+                        cleanupDisposition: .detachAndSettle
+                    )
+                ]
+            } else if toolName == MCPGlobalToolName.manageWorkspaces {
                 [
                     ConditionalExecutionOverride(
                         action: "switch",
@@ -190,7 +204,7 @@ import RepoPromptShared
                     expectedActiveDuration: "Ordinary dispatch must complete within \(MCPTimeoutPolicy.boundedToolExecutionDeadlineSeconds) seconds.",
                     evidence: "ServerNetworkManager applies MCPToolExecutionWatchdog at the resolved provider boundary.",
                     qualification: cleanupDisposition == .detachAndSettle
-                        ? "At most one read-only provider per window may remain detached after grace. Its ordinary permit and publication ownership are released, creating a bounded +1 provider-capacity exception until eventual settlement; later structure calls return retryable busy only after detachment."
+                        ? "A per-window settlement fence rejects later structure calls while any detached, abandoned, or force-disconnecting lease remains. The number that may remain fenced after ordinary permits and publication ownership are released is bounded by the already-admitted same-window calls: only one grace-expiring call may detach, request-cancelled calls become abandoned, and competing grace expiry resolves atomically to force-disconnect. Exact late settlement clears only its invocation lease. The provider's fixed 10-second readiness ceiling remains the liveness guarantee without a second registry TTL."
                         : "Cancellation must release provider, limiter, ownership, and run-registration state; an uncooperative handler force-disconnects its connection after grace.",
                     semanticWaitMaximumSeconds: semanticWaitMaximumSeconds,
                     conditionalExecutionOverrides: conditionalExecutionOverrides
