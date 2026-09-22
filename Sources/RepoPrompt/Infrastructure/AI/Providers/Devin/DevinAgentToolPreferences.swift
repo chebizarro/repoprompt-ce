@@ -133,6 +133,10 @@ enum DevinAgentToolPreferences {
         ///
         /// `normal` and `providerDefault` stay nil deliberately: Devin's ACP mode vocabulary has
         /// no `normal`/`auto` member, so there is nothing to map them to without guessing.
+        ///
+        /// Sending nothing is not a downgrade. On a session resumed through `session/load` the
+        /// previous mode survives, so a level that maps to nil cannot bring an earlier
+        /// escalation back down. That gap is open and tracked, not resolved here.
         var sessionModeID: String? {
             switch self {
             case .providerDefault, .normal:

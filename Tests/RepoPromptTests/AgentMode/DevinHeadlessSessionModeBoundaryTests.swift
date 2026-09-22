@@ -57,6 +57,74 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
         )
     }
 
+    /// A Full Approval run against an agent that advertises no usable modern mode selector must
+    /// fail before prompting rather than prompt at whatever mode the session happens to hold.
+    /// This is a real behavioural restriction introduced by carrying the level over ACP, so it is
+    /// pinned deliberately.
+    func testFullApprovalFailsBeforePromptWhenModeMetadataIsMissing() async throws {
+        let h = try makeHarness(omitModeSelector: true)
+        do {
+            try await drain(h.makeProvider(level: .fullApproval))
+            XCTFail("expected the run to fail when no usable mode selector is advertised")
+        } catch {
+            // expected
+        }
+        XCTAssertFalse(
+            h.recordedMethodOrder().contains("session/prompt"),
+            "Missing mode metadata must abort before prompting."
+        )
+    }
+
+    /// A resumed Full Approval run must still apply the mode before prompting -- the escalation
+    /// cannot be assumed to have survived in the loaded session.
+    func testResumedFullApprovalAppliesTheModeBeforePrompting() async throws {
+        let h = try makeHarness()
+        let provider = h.makeProvider(level: .fullApproval)
+        let stream = try await provider.streamAgentMessage(
+            AgentMessage(userMessage: "hi", resumeSessionID: "devin-headless-session")
+        )
+        for try await _ in stream {}
+        await provider.dispose()
+
+        let order = h.recordedMethodOrder()
+        XCTAssertTrue(order.contains("session/load"), "expected a resume; got \(order)")
+        guard let modeIndex = order.firstIndex(of: "session/set_config_option"),
+              let promptIndex = order.firstIndex(of: "session/prompt")
+        else {
+            return XCTFail("expected a mode set and a prompt on resume; got \(order)")
+        }
+        XCTAssertLessThan(modeIndex, promptIndex)
+    }
+
+    /// Mode is the LAST configuration step before the prompt. The model mutation validates with
+    /// `requiredModeValue: nil`, so anything sent after the mode could accept a response carrying
+    /// a different one.
+    func testModeIsTheLastConfigurationStepBeforeThePrompt() async throws {
+        let h = try makeHarness()
+        try await drain(h.makeProvider(level: .fullApproval, modelString: "swe-2-max"))
+
+        // Devin carries both the model and the mode through `session/set_config_option`, so
+        // the ordering to pin is the configId sequence, not distinct method names.
+        let configIDs = h.recordedParams("session/set_config_option")
+            .compactMap { $0["configId"] as? String }
+        guard let modelIndex = configIDs.firstIndex(of: "model"),
+              let modeIndex = configIDs.firstIndex(of: "mode")
+        else {
+            return XCTFail("expected both a model and a mode config set; got \(configIDs)")
+        }
+        XCTAssertLessThan(modelIndex, modeIndex, "The model must be set before the mode.")
+        XCTAssertEqual(
+            configIDs.last,
+            "mode",
+            "The mode must be the final configuration step before prompting."
+        )
+        let order = h.recordedMethodOrder()
+        XCTAssertLessThan(
+            order.lastIndex(of: "session/set_config_option") ?? .max,
+            order.firstIndex(of: "session/prompt") ?? -1
+        )
+    }
+
     // MARK: - Harness
 
     private struct Harness {
@@ -66,13 +134,16 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
             workspace.appendingPathComponent("devin").path
         }
 
-        func makeProvider(level: DevinAgentToolPreferences.PermissionLevel) -> DevinACPHeadlessAgentProvider {
+        func makeProvider(
+            level: DevinAgentToolPreferences.PermissionLevel,
+            modelString: String? = nil
+        ) -> DevinACPHeadlessAgentProvider {
             let recordPath = recordURL.path
             return DevinACPHeadlessAgentProvider(
                 config: DevinAgentConfig(
                     commandName: scriptPath,
                     includeRepoPromptMCPServer: true,
-                    modelString: nil
+                    modelString: modelString
                 ),
                 workspacePath: workspace.path,
                 configuredPermissionLevel: level,
@@ -111,7 +182,10 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
         await provider.dispose()
     }
 
-    private func makeHarness(failModeSet: Bool = false) throws -> Harness {
+    private func makeHarness(
+        failModeSet: Bool = false,
+        omitModeSelector: Bool = false
+    ) throws -> Harness {
         let workspace = try makeTestDirectory(name: "DevinHeadlessSessionModeBoundaryTests")
         let recordURL = workspace.appendingPathComponent("requests.jsonl")
         let script = #"""
@@ -119,6 +193,7 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
         import json, os, sys
         record_path = os.environ.get("ACP_RECORD_PATH")
         FAIL_MODE_SET = __FAIL_MODE_SET__
+        OMIT_MODE_SELECTOR = __OMIT_MODE_SELECTOR__
         if "--help" in sys.argv:
             print("Usage: devin acp\n\nRun as an acp server over stdio")
             sys.exit(0)
@@ -131,15 +206,22 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
         def fail(rid, msg):
             print(json.dumps({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": msg}}), flush=True)
         def options(mode):
+            if OMIT_MODE_SELECTOR:
+                # A downlevel/metadata-omitting agent: no usable modern mode selector.
+                return [{"id": "model", "name": "Model", "category": "model", "type": "select",
+                         "currentValue": current_model,
+                         "options": [{"value": "swe-2-high"}, {"value": "swe-2-max"}]}]
             return [
                 {"id": "mode", "name": "Session Mode", "category": "mode", "type": "select",
                  "currentValue": mode,
                  "options": [{"value": "accept-edits"}, {"value": "smart"}, {"value": "ask"},
                              {"value": "plan"}, {"value": "bypass"}]},
                 {"id": "model", "name": "Model", "category": "model", "type": "select",
-                 "currentValue": "swe-2-high", "options": [{"value": "swe-2-high"}]},
+                 "currentValue": current_model,
+                 "options": [{"value": "swe-2-high"}, {"value": "swe-2-max"}]},
             ]
         current_mode = "accept-edits"
+        current_model = "swe-2-high"
         for line in sys.stdin:
             line = line.strip()
             if not line:
@@ -159,9 +241,14 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
                               "authMethods": []})
             elif method == "session/new":
                 respond(rid, {"sessionId": "devin-headless-session", "configOptions": options(current_mode)})
+            elif method == "session/load":
+                respond(rid, {"configOptions": options(current_mode)})
             elif method == "session/set_config_option":
                 if FAIL_MODE_SET and params.get("configId") == "mode":
                     fail(rid, "Mode is restricted by your organization's policy")
+                elif params.get("configId") == "model":
+                    current_model = params.get("value", current_model)
+                    respond(rid, {"configOptions": options(current_mode)})
                 else:
                     current_mode = params.get("value", current_mode)
                     respond(rid, {"configOptions": options(current_mode)})
@@ -175,6 +262,7 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
                 respond(rid, {})
         """#
         .replacingOccurrences(of: "__FAIL_MODE_SET__", with: failModeSet ? "True" : "False")
+        .replacingOccurrences(of: "__OMIT_MODE_SELECTOR__", with: omitModeSelector ? "True" : "False")
         let scriptURL = workspace.appendingPathComponent("devin")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)

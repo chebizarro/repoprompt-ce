@@ -42,18 +42,23 @@ final class DevinACPHeadlessAgentProvider: HeadlessAgentProvider {
             },
             makeController: controllerFactory,
             beforePrompt: { controller, request in
-                // The bridge has no session-mode step of its own, so apply it here -- before
-                // the model, so an escalation is in force for the whole prompt.
-                if let mode = request.sessionModeID?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !mode.isEmpty
+                // The bridge has no session-mode step of its own, so apply it here.
+                //
+                // Model first, mode last -- the same order the interactive runner uses. The
+                // model mutation validates with `requiredModeValue: nil`, so it does not
+                // re-check the mode; setting the mode last means no later configuration call
+                // can accept a response that carries a different one. This ordering is what
+                // the boundary suite pins.
+                if let model = request.modelString?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !model.isEmpty,
+                   model.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) != .orderedSame
                 {
-                    try await controller.setSessionMode(mode)
+                    try await controller.setSessionModel(model)
                 }
-                guard let model = request.modelString?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !model.isEmpty,
-                      model.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) != .orderedSame
+                guard let mode = request.sessionModeID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !mode.isEmpty
                 else { return }
-                try await controller.setSessionModel(model)
+                try await controller.setSessionMode(mode)
             },
             approvalPolicy: .declineUnsupported
         )
