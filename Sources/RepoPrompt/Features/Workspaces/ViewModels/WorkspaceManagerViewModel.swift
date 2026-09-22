@@ -13786,7 +13786,13 @@ class WorkspaceManagerViewModel: ObservableObject {
         fileURL: URL
     ) throws -> WorkspaceModel {
         _ = fileURL
-        return try WorkspaceFileDecodeCache.decodeWorkspace(documentBytes: documentBytes).workspace
+        #if DEBUG
+            return try WorkspaceProjectionDecodeDiagnostics.measure(inputBytes: documentBytes.count) {
+                try WorkspaceFileDecodeCache.decodeWorkspace(documentBytes: documentBytes).workspace
+            }
+        #else
+            return try WorkspaceFileDecodeCache.decodeWorkspace(documentBytes: documentBytes).workspace
+        #endif
     }
 
     nonisolated static func loadWorkspaceFromFileResult(
