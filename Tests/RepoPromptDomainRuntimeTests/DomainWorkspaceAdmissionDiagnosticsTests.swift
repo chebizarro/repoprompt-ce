@@ -48,6 +48,93 @@ final class DomainWorkspaceAdmissionDiagnosticsTests: XCTestCase {
     }
 
     #if DEBUG
+        func testOverlappingWorkingCommitAndCASRefreshPreserveCancelledSaveEvidence() async throws {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            let authority = fixture.authority()
+            let dirty = try await fixture.makeDirty(authority)
+            let initial = await authority.agentAdmissionSnapshot(fixture.workspaceID)
+            let workingEntered = expectation(description: "working mutation captured its record")
+            let workingGate = Gate()
+            await authority.testSetBeforeWorkingPersistence { _ in
+                workingEntered.fulfill()
+                await workingGate.wait()
+            }
+            let nextDocument = try fixture.document("next-working-secret")
+            let working = Task { await authority.execute(fixture.command(.replaceWorkingDocument(nextDocument))) }
+            await fulfillment(of: [workingEntered], timeout: 5)
+
+            let saveEntered = expectation(description: "overlapping save reached persistence")
+            let saveGate = Gate()
+            await authority.testSetBeforeSavedPersistence { _ in
+                saveEntered.fulfill()
+                await saveGate.wait()
+            }
+            let saveCommand = fixture.command(.saveWorkspaceDocument(workspaceID: fixture.workspaceID))
+            let save = Task { await authority.execute(saveCommand) }
+            await fulfillment(of: [saveEntered], timeout: 5)
+            save.cancel()
+            await saveGate.release()
+            let cancelled = await save.value
+            XCTAssertEqual(cancelled.errorCode, .cancelled)
+            let beforeResume = await authority.agentAdmissionSnapshot(fixture.workspaceID)
+            let terminal = try XCTUnwrap(beforeResume.diagnostic.lastSave)
+            XCTAssertEqual(terminal.operationID, saveCommand.operationID)
+            XCTAssertEqual(terminal.transition, .saveCancelled)
+            XCTAssertEqual(terminal.attemptedRevision, dirty.workingRevision)
+            XCTAssertEqual(terminal.error, .cancelled)
+
+            await workingGate.release()
+            let committed = await working.value
+            XCTAssertEqual(committed.disposition, .applied)
+            let afterResume = await authority.agentAdmissionSnapshot(fixture.workspaceID)
+            XCTAssertEqual(afterResume.diagnostic.revisions?.workingRevision, dirty.workingRevision + 1)
+            XCTAssertEqual(afterResume.diagnostic.lastSave, terminal)
+            XCTAssertEqual(afterResume.diagnostic.dirtyOrigin, initial.diagnostic.dirtyOrigin)
+            XCTAssertEqual(afterResume.diagnostic.pendingSaveState, .none)
+            XCTAssertEqual(afterResume.diagnostic.pendingSaveCount, 0)
+            await authority.testSetBeforeWorkingPersistence(nil)
+            await authority.testSetBeforeSavedPersistence(nil)
+
+            // A second authority advances durable state. The original authority's failed
+            // CAS reconstructs a new record, but must retain its newer local diagnostics.
+            let competing = fixture.authority()
+            let external = try await competing.execute(fixture.command(.replaceWorkingDocument(fixture.document("external-working-secret"))))
+            XCTAssertEqual(external.disposition, .applied)
+            let stale = try await authority.execute(.init(
+                operationID: UUID(), expectedWorkspaceRevision: committed.after?.workingRevision,
+                conflictRecoveryPolicy: .failClosed, origin: .appPresentation(windowID: 1),
+                command: .replaceWorkingDocument(fixture.document("stale-working-secret"))
+            ))
+            XCTAssertEqual(stale.errorCode, .stateConflict)
+            let afterRefresh = await authority.agentAdmissionSnapshot(fixture.workspaceID)
+            XCTAssertEqual(afterRefresh.diagnostic.revisions, external.after)
+            XCTAssertEqual(afterRefresh.diagnostic.lastSave, terminal)
+            XCTAssertEqual(afterRefresh.diagnostic.dirtyOrigin, initial.diagnostic.dirtyOrigin)
+            XCTAssertEqual(afterRefresh.diagnostic.admissionState, .dirtyWithoutLiveSave)
+            let trace = await authority.transitionDiagnostics(fixture.workspaceID)
+            XCTAssertEqual(trace.last { $0.transition == .reconstructed }?.lastSave, terminal)
+
+            // A completed save followed by another edit is a different dirty lineage.
+            // Retain factual save history, but do not attribute that new lineage to our edit.
+            let externalSave = await competing.execute(fixture.command(.saveWorkspaceDocument(workspaceID: fixture.workspaceID)))
+            XCTAssertEqual(externalSave.disposition, .applied)
+            let nextLineage = try await competing.execute(fixture.command(.replaceWorkingDocument(fixture.document("new-lineage-secret"))))
+            XCTAssertEqual(nextLineage.disposition, .applied)
+            let nextConflict = try await authority.execute(.init(
+                operationID: UUID(), expectedWorkspaceRevision: external.after?.workingRevision,
+                conflictRecoveryPolicy: .failClosed, origin: .appPresentation(windowID: 1),
+                command: .replaceWorkingDocument(fixture.document("another-stale-secret"))
+            ))
+            XCTAssertEqual(nextConflict.errorCode, .stateConflict)
+            let newLineage = await authority.agentAdmissionSnapshot(fixture.workspaceID)
+            XCTAssertEqual(newLineage.diagnostic.revisions, nextLineage.after)
+            XCTAssertEqual(newLineage.diagnostic.lastSave, terminal)
+            XCTAssertEqual(newLineage.diagnostic.dirtyOrigin?.operation, .reconstruction)
+            XCTAssertEqual(newLineage.diagnostic.dirtyOrigin?.revision, nextLineage.after?.dirtyRevision)
+            XCTAssertNil(newLineage.diagnostic.dirtyOrigin?.operationID)
+        }
+
         func testInFlightCancellationRetainsDirtyStateAndRetryOwnsNewGeneration() async throws {
             let fixture = try Fixture()
             defer { fixture.remove() }
