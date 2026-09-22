@@ -2153,15 +2153,13 @@ actor ACPAgentSessionController {
 
     // MARK: - Helpers
 
-    /// A later parameter or mode mutation can invalidate an earlier successful
-    /// selection. Admit the complete effective request using only live session
-    /// authority, immediately before dispatching the prompt.
     /// Refuse to prompt on a resumed session whose requested permission level cannot be applied.
     ///
     /// The guard fires when the request carries no session mode at all. Interactively that means
     /// Normal or Provider Default -- Accept Edits and Smart map to the advertised `accept-edits`
     /// and `smart`, so they are applied and are unaffected. In unattended runs every level below
-    /// Full Approval sends nothing, because they keep the floor rather than escalate.
+    /// Full Approval sends nothing, which is not the same as holding a floor: nothing is sent,
+    /// so nothing is enforced.
     ///
     /// Sending nothing is not a downgrade. A session opened with `session/load` keeps the mode it
     /// already had, which can be a `bypass` this app set on an earlier run, so prompting anyway
@@ -2175,6 +2173,10 @@ actor ACPAgentSessionController {
     private func validateResumedSessionPermissionPolicy(_ request: ACPRunRequest) throws {
         guard provider.providerID == .devin,
               case .load = sessionConfiguration.mode,
+              // A load that could not find its session falls back to `session/new`, which leaves
+              // `sessionConfiguration.mode` as `.load` while the session is genuinely fresh.
+              // There is no inherited mode to disagree with, so the refusal must not apply.
+              fallbackResumeSessionIDForPromptClearing == nil,
               request.sessionModeID == nil
         else { return }
         throw ControllerError.requestFailed(
@@ -2185,6 +2187,9 @@ actor ACPAgentSessionController {
         )
     }
 
+    /// A later parameter or mode mutation can invalidate an earlier successful
+    /// selection. Admit the complete effective request using only live session
+    /// authority, immediately before dispatching the prompt.
     private func validatePromptModelParameterSelections(_ request: ACPRunRequest) throws {
         guard provider.supportsParameterizedModelPicker,
               !request.modelParameterSelections.isEmpty

@@ -169,6 +169,27 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
         )
     }
 
+    /// A resume whose session no longer exists falls back to `session/new`. That session is
+    /// genuinely fresh -- there is no inherited mode -- but `sessionConfiguration.mode` stays
+    /// `.load`, so the refusal must not fire on it.
+    func testResumeThatFallsBackToANewSessionStillPromptsAtALowerLevel() async throws {
+        let h = try makeHarness(startingMode: "bypass", loadNotFound: true)
+        let provider = h.makeProvider(level: .normal)
+        let stream = try await provider.streamAgentMessage(
+            AgentMessage(userMessage: "hi", resumeSessionID: "devin-headless-session")
+        )
+        for try await _ in stream {}
+        await provider.dispose()
+
+        let order = h.recordedMethodOrder()
+        XCTAssertTrue(order.contains("session/load"), "expected the load attempt; got \(order)")
+        XCTAssertTrue(order.contains("session/new"), "expected the fresh-session fallback; got \(order)")
+        XCTAssertTrue(
+            order.contains("session/prompt"),
+            "A session that fell back to `session/new` is fresh and must not be refused."
+        )
+    }
+
     // MARK: - Harness
 
     private struct Harness {
@@ -229,7 +250,8 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
     private func makeHarness(
         failModeSet: Bool = false,
         omitModeSelector: Bool = false,
-        startingMode: String = "accept-edits"
+        startingMode: String = "accept-edits",
+        loadNotFound: Bool = false
     ) throws -> Harness {
         let workspace = try makeTestDirectory(name: "DevinHeadlessSessionModeBoundaryTests")
         let recordURL = workspace.appendingPathComponent("requests.jsonl")
@@ -239,6 +261,7 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
         record_path = os.environ.get("ACP_RECORD_PATH")
         FAIL_MODE_SET = __FAIL_MODE_SET__
         OMIT_MODE_SELECTOR = __OMIT_MODE_SELECTOR__
+        LOAD_NOT_FOUND = __LOAD_NOT_FOUND__
         if "--help" in sys.argv:
             print("Usage: devin acp\n\nRun as an acp server over stdio")
             sys.exit(0)
@@ -287,7 +310,11 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
             elif method == "session/new":
                 respond(rid, {"sessionId": "devin-headless-session", "configOptions": options(current_mode)})
             elif method == "session/load":
-                respond(rid, {"configOptions": options(current_mode)})
+                if LOAD_NOT_FOUND:
+                    print(json.dumps({"jsonrpc": "2.0", "id": rid,
+                                      "error": {"code": -32602, "message": "Session not found"}}), flush=True)
+                else:
+                    respond(rid, {"configOptions": options(current_mode)})
             elif method == "session/set_config_option":
                 if FAIL_MODE_SET and params.get("configId") == "mode":
                     fail(rid, "Mode is restricted by your organization's policy")
@@ -309,6 +336,7 @@ final class DevinHeadlessSessionModeBoundaryTests: XCTestCase {
         .replacingOccurrences(of: "__FAIL_MODE_SET__", with: failModeSet ? "True" : "False")
         .replacingOccurrences(of: "__OMIT_MODE_SELECTOR__", with: omitModeSelector ? "True" : "False")
         .replacingOccurrences(of: "__STARTING_MODE__", with: startingMode)
+        .replacingOccurrences(of: "__LOAD_NOT_FOUND__", with: loadNotFound ? "True" : "False")
         let scriptURL = workspace.appendingPathComponent("devin")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)

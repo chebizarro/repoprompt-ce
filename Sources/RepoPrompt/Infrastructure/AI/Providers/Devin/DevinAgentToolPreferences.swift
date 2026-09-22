@@ -110,9 +110,10 @@ enum DevinAgentToolPreferences {
         /// `smart` presume a person answers the residual prompts, and mapping them to `auto`
         /// keeps unattended behaviour deterministic.
         ///
-        /// This is an argv floor only for the one-shot CLI path, which does honour the flag.
-        /// `devin acp` ignores it entirely, so for headless ACP runs the effective level comes
-        /// from `unattendedSessionModeID`, not from here.
+        /// This value only reaches argv. `devin acp` ignores it entirely, so for headless ACP
+        /// runs the effective level comes from `unattendedSessionModeID`, not from here. Whether
+        /// the one-shot CLI path acts on it is not established; it is validated there, which is
+        /// not the same as being honoured, so this should not be read as a guaranteed floor.
         var unattendedCLIPermissionMode: String {
             switch self {
             case .fullApproval:
