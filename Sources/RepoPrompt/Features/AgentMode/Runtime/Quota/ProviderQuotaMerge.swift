@@ -147,6 +147,11 @@ enum ProviderQuotaMerge {
         {
             return .modelFamilies(previousFamilies.union(deltaFamilies))
         }
+        if case .modelFamilies = previous, delta == .accountWide {
+            // A sparse notification with no family attribution does not prove that the
+            // previously observed model-specific limits cover the entire account.
+            return previous
+        }
         return delta
     }
 

@@ -14,6 +14,7 @@ final class CodexProviderQuotaServiceTests: XCTestCase {
 
     private actor FakeQuotaClient: CodexQuotaAppServerClient {
         private(set) var startCount = 0
+        private(set) var completedStartCount = 0
         private(set) var stopCount = 0
         private(set) var requestedMethods: [String] = []
         private var notificationContinuation: AsyncStream<CodexAppServerClient.Notification>.Continuation?
@@ -21,6 +22,8 @@ final class CodexProviderQuotaServiceTests: XCTestCase {
         private var failure: Error?
         /// Artificial latency so overlapping calls genuinely overlap.
         private var responseDelayNanos: UInt64 = 0
+        private var holdStarts = false
+        private var startWaiters: [CheckedContinuation<Void, Never>] = []
 
         init(response: [String: Any]) {
             self.response = response
@@ -38,8 +41,22 @@ final class CodexProviderQuotaServiceTests: XCTestCase {
             responseDelayNanos = nanos
         }
 
+        func holdTransportStarts() {
+            holdStarts = true
+        }
+
+        func releaseTransportStarts() {
+            holdStarts = false
+            startWaiters.forEach { $0.resume() }
+            startWaiters.removeAll()
+        }
+
         func startIfNeeded() async throws {
             startCount += 1
+            if holdStarts {
+                await withCheckedContinuation { startWaiters.append($0) }
+            }
+            completedStartCount += 1
             if let failure { throw failure }
         }
 
@@ -328,6 +345,40 @@ final class CodexProviderQuotaServiceTests: XCTestCase {
         XCTAssertTrue(tornDown, "no client survives the interleave")
         let stopped = await waitUntil { await client.stopCount >= 1 }
         XCTAssertTrue(stopped, "the owned process is stopped")
+    }
+
+    func testRetiredPrimingReadDoesNotRequestAfterTransportStartResumes() async {
+        let retiredClient = FakeQuotaClient(response: readResponse(primaryUsedPercent: 10))
+        await retiredClient.holdTransportStarts()
+        let replacementClient = FakeQuotaClient(response: readResponse(primaryUsedPercent: 20))
+        let clients = ClientSequence([retiredClient, replacementClient])
+        let service = CodexProviderQuotaService(
+            clientFactory: { clients.next() },
+            accountIDProvider: { "acct-123" },
+            requestTimeout: 5
+        )
+
+        await service.setEnabled(true)
+        let stream = await service.subscribe()
+        _ = stream
+        let bothStarted = await waitUntil { await retiredClient.startCount == 2 }
+        XCTAssertTrue(bothStarted, "the notification loop and priming read reached transport startup")
+
+        await service.setEnabled(false)
+        await service.setEnabled(true)
+        await retiredClient.releaseTransportStarts()
+
+        let oldStartsFinished = await waitUntil { await retiredClient.completedStartCount == 2 }
+        XCTAssertTrue(oldStartsFinished)
+        let replacementLoaded = await waitUntil {
+            if case let .loaded(snapshot) = await service.test_status() {
+                return snapshot.buckets.first?.window(role: "primary")?.percent?.rawValue == 20
+            }
+            return false
+        }
+        XCTAssertTrue(replacementLoaded, "the new generation performs its own priming read")
+        let staleRequests = await retiredClient.requestedMethods
+        XCTAssertEqual(staleRequests, [], "a cancelled old startup must not spend a read after reactivation")
     }
 
     // MARK: - In-flight generation fence

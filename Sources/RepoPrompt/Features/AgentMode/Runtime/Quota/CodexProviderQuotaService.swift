@@ -65,6 +65,7 @@ actor CodexProviderQuotaService {
     private var isEnabled = false
     private var client: (any CodexQuotaAppServerClient)?
     private var notificationTask: Task<Void, Never>?
+    private var primingTask: Task<Void, Never>?
     private var inFlightRead: InFlightRead?
     /// Bumped by every teardown. A read that spans a teardown is stale on completion and
     /// must not adopt, clear, or leak state belonging to the transport that replaced it.
@@ -203,9 +204,17 @@ actor CodexProviderQuotaService {
             guard let self else { return }
             await runNotificationLoop(client: client)
         }
-        Task { [weak self] in
-            await self?.performRead()
+        let generation = transportGeneration
+        primingTask = Task { [weak self] in
+            guard let self else { return }
+            await performRead(expectedGeneration: generation)
+            finishPrimingRead(generation: generation)
         }
+    }
+
+    private func finishPrimingRead(generation: UInt64) {
+        guard transportGeneration == generation else { return }
+        primingTask = nil
     }
 
     private func runNotificationLoop(client: any CodexQuotaAppServerClient) async {
@@ -236,6 +245,8 @@ actor CodexProviderQuotaService {
         // Retiring this transport invalidates any read still riding on it.
         transportGeneration &+= 1
         notificationTask = nil
+        primingTask?.cancel()
+        primingTask = nil
         self.client = nil
         await client.stop()
     }
@@ -258,6 +269,8 @@ actor CodexProviderQuotaService {
         transportGeneration &+= 1
         notificationTask?.cancel()
         notificationTask = nil
+        primingTask?.cancel()
+        primingTask = nil
         inFlightRead?.task.cancel()
         inFlightRead = nil
         let client = client
@@ -273,8 +286,9 @@ actor CodexProviderQuotaService {
     /// Every caller requires a live observer. An unobserved read would construct a transport
     /// that no `removeSubscriber` teardown will ever reclaim, so the observer check is the
     /// single admission point rather than a per-caller decision.
-    private func performRead() async {
-        guard isEnabled, !continuations.isEmpty else { return }
+    private func performRead(expectedGeneration: UInt64? = nil) async {
+        guard !Task.isCancelled, isEnabled, !continuations.isEmpty else { return }
+        if let expectedGeneration, expectedGeneration != transportGeneration { return }
         if let inFlightRead {
             // Single-flight: join the in-flight read instead of issuing a duplicate.
             await inFlightRead.task.value
@@ -296,6 +310,7 @@ actor CodexProviderQuotaService {
             guard let self else { return }
             do {
                 try await readClient.startIfNeeded()
+                try Task.checkCancellation()
                 let response = try await readClient.request(
                     method: CodexProviderQuotaMapper.readMethod,
                     params: nil,

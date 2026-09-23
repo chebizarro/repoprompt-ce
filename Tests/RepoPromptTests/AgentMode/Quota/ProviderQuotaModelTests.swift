@@ -495,4 +495,32 @@ final class ProviderQuotaModelTests: XCTestCase {
         )
         XCTAssertEqual(updated.coverage, .accountWideAggregateOnly)
     }
+
+    func testModelFamilyCoverageIsNotWidenedBySparseAccountWideDelta() throws {
+        let initial = try merged(
+            delta(
+                buckets: [ProviderQuotaBucketDelta(
+                    bucketID: ProviderQuotaBucketID(rawValue: "codex-model"),
+                    nativeModelAlias: "gpt-5-codex",
+                    windows: [window(bucket: "codex-model", role: "primary", used: 10, observedAt: base)]
+                )],
+                observedAt: base,
+                coverage: .modelFamilies(["gpt-5-codex"])
+            ),
+            into: nil
+        )
+
+        let updated = try merged(
+            delta(
+                buckets: [],
+                source: .codexAppServerNotification,
+                observedAt: base + 5,
+                coverage: .accountWide
+            ),
+            into: initial
+        )
+
+        XCTAssertEqual(updated.coverage, .modelFamilies(["gpt-5-codex"]))
+        XCTAssertEqual(updated.buckets.first?.window(role: "primary")?.percent?.rawValue, 10)
+    }
 }
