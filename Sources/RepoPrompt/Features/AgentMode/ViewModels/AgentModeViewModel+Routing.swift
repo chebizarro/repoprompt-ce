@@ -27,17 +27,18 @@ extension AgentModeViewModel {
         let configuration = modelRouterSettingsStore.modelRouterConfiguration()
         let available = modelRouterCanRoutePrimarySession(configuration)
         let isRouting = currentTabID.map { freshTaskRoutingByTabID[$0] != nil } ?? false
+        let disabledReason: String? = if configuration.enabled, !available {
+            "Router is enabled but paused until its routing service and provider targets are available. Click to turn it off."
+        } else if !available {
+            "Configure a routing service and targets in Model Router Settings."
+        } else {
+            nil
+        }
         return AgentModelRouterPillProps(
             isOn: configuration.enabled,
             isAvailable: available || configuration.enabled,
             isRouting: isRouting,
-            disabledReason: if configuration.enabled, !available {
-                "Router is enabled but paused until its routing service and provider targets are available. Click to turn it off."
-            } else if !available {
-                "Configure a routing service and targets in Model Router Settings."
-            } else {
-                nil
-            }
+            disabledReason: disabledReason
         )
     }
 

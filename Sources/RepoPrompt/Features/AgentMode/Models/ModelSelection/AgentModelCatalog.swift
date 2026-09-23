@@ -1885,7 +1885,7 @@ enum AgentModelCatalog {
             ?? AgentModel.gpt56SolMedium.rawValue
         let solHigh = preferredCodexFamilyModelRaw("sol", effort: .high, availability: availability)
             ?? AgentModel.gpt56SolHigh.rawValue
-        switch kind {
+        return switch kind {
         case .explore:
             [
                 SelectionCandidate(agent: .codexExec, modelRaw: lunaLow),
