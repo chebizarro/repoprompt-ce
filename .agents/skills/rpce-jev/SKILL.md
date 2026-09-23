@@ -7,21 +7,22 @@ description: Cut agent context-window usage in RepoPrompt CE by delegating relev
 
 Jev answers typed questions (choice / yes-no probability / rubric score) over text in ~100 ms at $0.042 per million input tokens and never generates text. The point of this skill is simple: **let Jev read the bulk text and give the agent only ids, line ranges, and probabilities.** Each avoided `read_file` or search dump is a direct token saving in the frontier model's context.
 
-Script: `.agents/skills/rpce-jev/scripts/jev.py` (Python 3.9+, stdlib only). Recipes and thresholds: `references/question-recipes.md`.
+Script: `scripts/jev.py` beside this SKILL.md (Python 3.9+, stdlib only) — `.agents/skills/rpce-jev/scripts/jev.py` when installed in a workspace, `~/.agents/skills/rpce-jev/scripts/jev.py` when installed globally. Recipes and thresholds: `references/question-recipes.md`.
 
 ## Setup
 
 ```bash
 export TYPESAFE_API_KEY=...          # or ~/.jev-key / ~/.config/typesafe/api_key (chmod 600)
 # or: security add-generic-password -s TYPESAFE_API_KEY -a "$USER" -w
-python3 .agents/skills/rpce-jev/scripts/jev.py doctor
+J() { python3 "$(ls .agents/skills/rpce-jev/scripts/jev.py ~/.agents/skills/rpce-jev/scripts/jev.py 2>/dev/null | head -1)" "$@"; }
+J doctor
 ```
 
 `TYPESAFE_BASE_URL` and `TYPESAFE_DEFAULT_MODEL` (default `jev-latest`) are honored. Never paste the key into prompts, transcripts, or commits; `preflight.sh` secret scanning applies.
 
 ## Commands
 
-All commands accept `--json` and end with a `# jev usage:` line (requests, input tokens, cost). `J=python3 .agents/skills/rpce-jev/scripts/jev.py` below.
+All commands accept `--json` and end with a `# jev usage:` line (requests, input tokens, cost). `$J` below is the `J` shell function from Setup (workspace copy preferred, global copy otherwise).
 
 | Need | Command | What comes back |
 | --- | --- | --- |
