@@ -125,8 +125,9 @@ final class AutoRecommendationEngine {
     private func computeChatModelRecommendation(status: ProviderStatusSnapshot) -> ChatModelRecommendation? {
         let inAppPlanning = BestPracticeProfiles.bestInAppPlanningReview
         let bestPlanning = BestPracticeProfiles.bestPlanning
-        let apiPlanningModelString = AIModel.gpt54Pro.rawValue
-        let apiPlanningModelLabel = AIModel.gpt54Pro.displayName
+        let apiPlanningModel = AIModel.openaiCustomReasoning(name: "gpt-6-sol", effort: .high)
+        let apiPlanningModelString = apiPlanningModel.rawValue
+        let apiPlanningModelLabel = apiPlanningModel.displayName
 
         // Build available options
         var codexOption: ChatBackendOption?
@@ -148,8 +149,7 @@ final class AutoRecommendationEngine {
             )
         }
 
-        // OpenAI API option - shows reasoning but higher cost. GPT-5.6 Sol is ChatGPT Pro export/planning guidance,
-        // not an OpenAI API model in RepoPrompt's guidance.
+        // OpenAI API option - use the current Sol model with explicit high reasoning.
         if status.openAI == .ready {
             openAIOption = ChatBackendOption(
                 kind: .openAI,
@@ -159,7 +159,7 @@ final class AutoRecommendationEngine {
                 tradeoffs: [
                     "• API-backed planning and review when Codex CLI is unavailable",
                     "• Visible reasoning traces",
-                    "• GPT-5.6 Sol is Codex CLI / ChatGPT Pro guidance, not an API availability claim"
+                    "• GPT-6 Sol is available through the OpenAI Responses API"
                 ]
             )
         }
@@ -239,8 +239,8 @@ final class AutoRecommendationEngine {
             codexOption = ChatBackendOption(
                 kind: .codex,
                 displayName: "Codex CLI",
-                modelString: AIModel.codexCliGpt56SolMedium.rawValue,
-                description: "GPT-5.6 Sol Medium via Codex CLI",
+                modelString: AIModel.codexCustom(name: "gpt-6-sol-medium").rawValue,
+                description: "GPT-6 Sol Medium via Codex CLI",
                 tradeoffs: [
                     "• Superior reasoning capabilities",
                     "• Excellent for complex tasks",
@@ -311,7 +311,7 @@ final class AutoRecommendationEngine {
         if status.codexCLI == .ready {
             return ContextBuilderRecommendation(
                 recommendedAgent: .codexExec,
-                recommendedModel: .gpt56SolLow,
+                recommendedModel: .gpt6LunaLow,
                 rationale: BestPracticeProfiles.contextBuilderRationale
             )
         } else if status.claudeCodeCLI == .ready {
@@ -319,14 +319,14 @@ final class AutoRecommendationEngine {
                 recommendedAgent: .claudeCode,
                 recommendedModel: .claudeSonnet,
                 rationale: "Claude Code with Sonnet provides strong context building with good balance of speed and quality.",
-                upgradeHint: "For best context building, connect Codex CLI with GPT-5.6 Sol Low. Requires OpenAI Plus/Pro subscription."
+                upgradeHint: "For best context building, connect Codex CLI with GPT-6 Luna Low. Requires OpenAI Plus/Pro subscription."
             )
         } else if status.cursorCLI == .ready {
             return ContextBuilderRecommendation(
                 recommendedAgent: .cursor,
                 recommendedModel: .cursorComposer2,
                 rationale: "Cursor CLI with Composer 2 can handle context building when the preferred Codex or Claude Code providers are not configured.",
-                upgradeHint: "For best context building, connect Codex CLI with GPT-5.6 Sol Low or Claude Code with Sonnet."
+                upgradeHint: "For best context building, connect Codex CLI with GPT-6 Luna Low or Claude Code with Sonnet."
             )
         }
 
@@ -511,7 +511,7 @@ final class AutoRecommendationEngine {
         // Suggest upgrade if only some CLIs are available
         let upgradeHint: String? = {
             if recommendedStatus.codexCLI != .ready {
-                return "Connect Codex CLI for GPT-5.6 Sol Low (explore/discovery), GPT-5.6 Sol Medium (engineer and design fallback), and GPT-5.6 Sol High (pair/Oracle)."
+                return "Connect Codex CLI for GPT-6 Luna Low (explore/discovery), GPT-6 Sol Medium (engineer and design fallback), and GPT-6 Sol High (pair/Oracle)."
             }
             if recommendedStatus.claudeCodeCLI != .ready {
                 return "Connect Claude Code for Claude Opus (design/pair). Best for architecture and creative work."
@@ -614,7 +614,7 @@ final class AutoRecommendationEngine {
         case .claudeCode:
             rec.claudeCodeOption?.modelString ?? AIModel.claudeCodeOpus.rawValue
         case .codex:
-            rec.codexOption?.modelString ?? AIModel.codexCliGpt56SolHigh.rawValue
+            rec.codexOption?.modelString ?? AIModel.codexCustom(name: "gpt-6-sol-high").rawValue
         case .openAI:
             rec.openAIOption?.modelString ?? AIModel.gpt54Pro.rawValue
         }

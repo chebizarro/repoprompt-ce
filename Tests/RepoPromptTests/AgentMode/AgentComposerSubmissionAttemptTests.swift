@@ -209,7 +209,7 @@ extension AgentComposerSubmissionAttemptTests {
         XCTAssertTrue(props.areModelControlsDisabled)
     }
 
-    func testDefinitiveMissingRouterCredentialDisablesPersistedEnablement() throws {
+    func testMissingRouterCredentialPreservesPersistedEnablementIntent() throws {
         let backend = ComposerRoutingBackend(
             outcome: .selectLast,
             readiness: .needsConfiguration(generation: 1, reason: "Validate a TypeSafe API key.")
@@ -219,8 +219,9 @@ extension AgentComposerSubmissionAttemptTests {
 
         viewModel.handleModelRouterRuntimeChanged()
 
-        XCTAssertFalse(store.modelRouterConfiguration().enabled)
+        XCTAssertTrue(store.modelRouterConfiguration().enabled)
         XCTAssertFalse(viewModel.modelRouterPillProps().isOn)
+        XCTAssertTrue(viewModel.modelRouterPillProps().isAvailable)
     }
 
     func testFakeReadyRouterCommitsSelectedExecutableTargetAtSubmitBoundary() async throws {

@@ -561,14 +561,14 @@ final class AgentTaskRoutingCandidateBuilderPolicyTests: XCTestCase {
         )
 
         let lunaCandidate = try XCTUnwrap(candidates.first(where: {
-            CodexModelSpecifier(raw: $0.target.modelRaw).baseModel == "gpt-5.6-luna"
+            CodexModelSpecifier(raw: $0.target.modelRaw).baseModel == "gpt-6-luna"
         }))
-        XCTAssertEqual(lunaCandidate.utilityTier, "gpt-5.6-luna")
-        XCTAssertTrue(lunaCandidate.descriptor.targetDescription.contains("nano-tier"))
-        XCTAssertTrue(lunaCandidate.descriptor.targetDescription.contains("$0.20 input / $1.20 output"))
+        XCTAssertEqual(lunaCandidate.utilityTier, "gpt-6-luna")
+        XCTAssertTrue(lunaCandidate.descriptor.targetDescription.contains("efficient, high-volume"))
+        XCTAssertTrue(lunaCandidate.descriptor.targetDescription.contains("$0.10 input / $0.50 output"))
         XCTAssertNil(lunaCandidate.target.reasoningEffortRaw)
         XCTAssertFalse(lunaCandidate.descriptor.targetDescription.contains("Effort:"))
-        XCTAssertEqual(lunaCandidate.descriptor.rubricVersion, "rpce.automatic-utility-frontier.v1-evidence-2026-09-19")
+        XCTAssertEqual(lunaCandidate.descriptor.rubricVersion, AgentTaskRoutingModelProfileCatalog.rubricVersion)
 
         let fableCandidate = try XCTUnwrap(candidates.first(where: {
             ClaudeModelSpecifier(raw: $0.target.modelRaw).baseModel == AgentModel.claudeFable51.rawValue
@@ -577,6 +577,20 @@ final class AgentTaskRoutingCandidateBuilderPolicyTests: XCTestCase {
         XCTAssertTrue(fableCandidate.descriptor.targetDescription.contains("Terminal-Bench 4.0"))
         XCTAssertTrue(fableCandidate.descriptor.targetDescription.contains("$10 input / $50 output"))
         XCTAssertNil(fableCandidate.target.reasoningEffortRaw)
+    }
+
+    func testApprovedCodexFamilySelectionTracksNewestAdvertisedVersionOnly() throws {
+        let options = [
+            AgentModelOption(rawValue: "gpt-5.6-sol-high", displayName: "GPT-5.6 Sol High", description: nil, isDefault: false),
+            AgentModelOption(rawValue: "gpt-6-sol-high", displayName: "GPT-6 Sol High", description: nil, isDefault: false),
+            AgentModelOption(rawValue: "gpt-7-sol-high", displayName: "GPT-7 Sol High", description: nil, isDefault: false),
+            AgentModelOption(rawValue: "gpt-99-nova-high", displayName: "GPT-99 Nova High", description: nil, isDefault: false)
+        ]
+
+        let selected = try XCTUnwrap(AgentModelCatalog.preferredCodexFamilyOption("sol", from: options))
+
+        XCTAssertEqual(CodexModelSpecifier(raw: selected.rawValue).baseModel, "gpt-7-sol")
+        XCTAssertNil(AgentModelCatalog.preferredCodexFamilyOption("nova", from: Array(options.prefix(3))))
     }
 
     func testAutomaticModelCandidatesCoverAvailableBaseModelsWithoutTierDefaults() throws {
@@ -592,7 +606,7 @@ final class AgentTaskRoutingCandidateBuilderPolicyTests: XCTestCase {
         )
 
         XCTAssertTrue(Set(candidates.map(\.utilityTier)).isSuperset(of: [
-            "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"
+            "gpt-6-luna", "gpt-5.6-terra", "gpt-6-sol"
         ]))
         XCTAssertEqual(Set(candidates.map(\.target.agentRaw)), [
             AgentProviderKind.claudeCode.rawValue,
@@ -613,7 +627,7 @@ final class AgentTaskRoutingCandidateBuilderPolicyTests: XCTestCase {
         let model = try XCTUnwrap(builder.build(
             allowedProviders: [.codexExec],
             availability: availability
-        ).first(where: { $0.target.modelRaw == "gpt-5.6-sol" }))
+        ).first(where: { $0.target.modelRaw == "gpt-6-sol" }))
 
         let efforts = try builder.buildEfforts(for: model, availability: availability)
 
@@ -637,14 +651,14 @@ final class AgentTaskRoutingCandidateBuilderPolicyTests: XCTestCase {
                 .init(
                     roleLabel: "Engineer",
                     provider: .codexExec,
-                    modelRaw: "gpt-5.6-sol-high",
+                    modelRaw: "gpt-6-sol-high",
                     isUserOverride: true
                 )
             ]
         )
 
         XCTAssertGreaterThan(candidates.count, 1)
-        let sol = try XCTUnwrap(candidates.first(where: { $0.target.modelRaw == "gpt-5.6-sol" }))
+        let sol = try XCTUnwrap(candidates.first(where: { $0.target.modelRaw == "gpt-6-sol" }))
         XCTAssertTrue(sol.descriptor.targetDescription.contains("Engineer (user-set)"))
         XCTAssertTrue(sol.descriptor.targetDescription.contains("not constraints or automatic choices"))
         XCTAssertTrue(candidates.contains { $0.target.modelRaw == "gpt-5.6-terra" })

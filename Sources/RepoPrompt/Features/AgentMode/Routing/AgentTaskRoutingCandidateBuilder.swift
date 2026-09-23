@@ -26,7 +26,22 @@ struct AgentTaskRoutingCandidateBuilder {
         let provider: AgentProviderKind
         let baseModelAliases: [String]
         let modelClass: String
+        let preferredCodexFamily: String?
         let rubric: String
+
+        init(
+            provider: AgentProviderKind,
+            baseModelAliases: [String],
+            modelClass: String,
+            preferredCodexFamily: String? = nil,
+            rubric: String
+        ) {
+            self.provider = provider
+            self.baseModelAliases = baseModelAliases
+            self.modelClass = modelClass
+            self.preferredCodexFamily = preferredCodexFamily
+            self.rubric = rubric
+        }
     }
 
     let opaqueKey: () -> String
@@ -59,6 +74,7 @@ struct AgentTaskRoutingCandidateBuilder {
             )
             guard seenTargets.insert(target).inserted else { return nil }
             let key = opaqueKey()
+            let utilityTier = definition.preferredCodexFamily == nil ? definition.modelClass : baseModelRaw
             let matchingRoleDefaults = roleDefaults.filter {
                 $0.provider == definition.provider
                     && Self.baseModelRaw($0.modelRaw, provider: $0.provider)?
@@ -66,11 +82,11 @@ struct AgentTaskRoutingCandidateBuilder {
             }
             return Candidate(
                 opaqueKey: key,
-                utilityTier: definition.modelClass,
+                utilityTier: utilityTier,
                 target: target,
                 descriptor: AgentTaskRoutingCandidateDescriptor(
                     opaqueKey: key,
-                    roleLabels: [definition.modelClass],
+                    roleLabels: [utilityTier],
                     targetDescription: Self.modelDescription(
                         target,
                         displayName: AgentModelCatalog.displayName(
@@ -163,8 +179,9 @@ struct AgentTaskRoutingCandidateBuilder {
     private static let modelDefinitions: [ModelDefinition] = [
         .init(
             provider: .codexExec,
-            baseModelAliases: ["gpt-5.6-luna"],
-            modelClass: "gpt-5.6-luna",
+            baseModelAliases: ["gpt-6-luna", "gpt-5.6-luna"],
+            modelClass: "gpt-luna",
+            preferredCodexFamily: "luna",
             rubric: "Judge Luna as a base model using its capability, expected completion reliability, and price. Do not choose it merely because the prompt is short."
         ),
         .init(
@@ -175,8 +192,9 @@ struct AgentTaskRoutingCandidateBuilder {
         ),
         .init(
             provider: .codexExec,
-            baseModelAliases: ["gpt-5.6-sol", "gpt-5.6"],
-            modelClass: "gpt-5.6-sol",
+            baseModelAliases: ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6"],
+            modelClass: "gpt-sol",
+            preferredCodexFamily: "sol",
             rubric: "Judge Sol as a base model using its capability, expected completion reliability, and price, including whether its stronger base capability avoids missed findings or retries."
         ),
         .init(
@@ -199,7 +217,7 @@ struct AgentTaskRoutingCandidateBuilder {
         ),
         .init(
             provider: .claudeCode,
-            baseModelAliases: ["claude-opus-5", "opus"],
+            baseModelAliases: ["opus", "claude-opus-5-5", "claude-opus-5"],
             modelClass: "claude-opus",
             rubric: "Judge Opus as a base model using its capability, expected completion reliability, and price, including whether its stronger base capability avoids missed findings or retries."
         ),
@@ -216,6 +234,11 @@ struct AgentTaskRoutingCandidateBuilder {
         availability: AgentModelCatalog.AvailabilityContext
     ) -> AgentModelOption? {
         let options = AgentModelCatalog.options(for: definition.provider, availability: availability)
+        if let family = definition.preferredCodexFamily,
+           let option = AgentModelCatalog.preferredCodexFamilyOption(family, availability: availability)
+        {
+            return option
+        }
         return definition.baseModelAliases.lazy.compactMap { alias in
             options.first { option in
                 baseModelRaw(option.rawValue, provider: definition.provider)?
