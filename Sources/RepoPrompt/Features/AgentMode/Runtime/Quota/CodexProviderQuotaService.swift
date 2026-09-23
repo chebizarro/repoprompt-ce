@@ -208,7 +208,7 @@ actor CodexProviderQuotaService {
         primingTask = Task { [weak self] in
             guard let self else { return }
             await performRead(expectedGeneration: generation)
-            finishPrimingRead(generation: generation)
+            await finishPrimingRead(generation: generation)
         }
     }
 
