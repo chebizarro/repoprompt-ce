@@ -10482,6 +10482,10 @@ actor ServerNetworkManager {
                 executionWatchdogTerminalConnections.contains(connectionID)
             }
 
+            func debugExecutionWatchdogAdmittedCallCount(connectionID: UUID) async -> Int {
+                await callLimiters[connectionID]?.executionWatchdogDiagnostics().admittedCallCount ?? 0
+            }
+
             func debugCodeStructureSettlementSnapshot(
                 windowID: Int
             ) -> MCPCodeStructureSettlementRegistry.Snapshot {

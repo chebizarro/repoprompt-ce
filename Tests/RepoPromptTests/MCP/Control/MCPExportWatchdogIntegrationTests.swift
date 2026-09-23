@@ -941,6 +941,10 @@ import XCTest
                         return ingress.acceptedFrameCount >= initialAcceptedFrameCount + 1
                     }
                     XCTAssertTrue(secondFrameAccepted)
+                    let bothCallsAdmitted = await Self.waitUntil {
+                        await manager.debugExecutionWatchdogAdmittedCallCount(connectionID: endpoint.connectionID) >= 2
+                    }
+                    XCTAssertTrue(bothCallsAdmitted)
 
                     try await clock.advanceNext(expected: MCPTimeoutPolicy.promptExportExecutionDeadline)
                     try await clock.waitForSleeper(
