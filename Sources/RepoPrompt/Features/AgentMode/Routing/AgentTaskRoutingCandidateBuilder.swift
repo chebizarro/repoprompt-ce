@@ -235,7 +235,7 @@ struct AgentTaskRoutingCandidateBuilder {
     ) -> AgentModelOption? {
         let options = AgentModelCatalog.options(for: definition.provider, availability: availability)
         if let family = definition.preferredCodexFamily,
-           let option = AgentModelCatalog.preferredCodexFamilyOption(family, availability: availability)
+           let option = AgentModelCatalog.preferredCodexFamilyOption(family, from: options)
         {
             return option
         }

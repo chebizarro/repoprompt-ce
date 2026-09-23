@@ -579,6 +579,14 @@ final class AgentTaskRoutingCandidateBuilderPolicyTests: XCTestCase {
         XCTAssertNil(fableCandidate.target.reasoningEffortRaw)
     }
 
+    func testGPT6EffortAndAgentModelResolution() {
+        XCTAssertEqual(CodexModelSpecifier(raw: "gpt-6-sol-max").reasoningEffort, .max)
+        XCTAssertEqual(CodexModelSpecifier(raw: "gpt-6-sol-xhigh").reasoningEffort, .xhigh)
+        XCTAssertNil(CodexModelSpecifier(raw: "gpt-6-sol-ultra").reasoningEffort)
+        XCTAssertEqual(AgentModel.resolvedModel(forRaw: "gpt-6-sol-max", agentKind: .codexExec), .gpt6SolMax)
+        XCTAssertEqual(AgentModel.resolvedModel(forRaw: "gpt-6-luna-low", agentKind: .codexExec), .gpt6LunaLow)
+    }
+
     func testApprovedCodexFamilySelectionTracksNewestAdvertisedVersionOnly() throws {
         let options = [
             AgentModelOption(rawValue: "gpt-5.6-sol-high", displayName: "GPT-5.6 Sol High", description: nil, isDefault: false),

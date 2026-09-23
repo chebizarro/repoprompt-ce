@@ -123,8 +123,14 @@ final class AutoRecommendationEngine {
     // MARK: - Chat Model Recommendation
 
     private func computeChatModelRecommendation(status: ProviderStatusSnapshot) -> ChatModelRecommendation? {
-        let inAppPlanning = BestPracticeProfiles.bestInAppPlanningReview
         let bestPlanning = BestPracticeProfiles.bestPlanning
+        let codexPlanningRaw = Self.preferredCodexFamilyModelRaw(
+            "sol",
+            effort: .high,
+            fallback: .gpt56SolHigh
+        )
+        let codexPlanningModel = AIModel.codexCustom(name: codexPlanningRaw)
+        let codexPlanningLabel = AgentModelCatalog.displayName(for: codexPlanningRaw, agentKind: .codexExec)
         let apiPlanningModel = AIModel.openaiCustomReasoning(name: "gpt-6-sol", effort: .high)
         let apiPlanningModelString = apiPlanningModel.rawValue
         let apiPlanningModelLabel = apiPlanningModel.displayName
@@ -139,8 +145,8 @@ final class AutoRecommendationEngine {
             codexOption = ChatBackendOption(
                 kind: .codex,
                 displayName: "Codex CLI (Recommended)",
-                modelString: inAppPlanning.modelString,
-                description: "\(inAppPlanning.modelLabel) – strong reasoning with practical limits",
+                modelString: codexPlanningModel.rawValue,
+                description: "\(codexPlanningLabel) – strong reasoning with practical limits",
                 tradeoffs: [
                     "• Strong reasoning without extended wait times",
                     "• Won't exhaust weekly usage limits quickly",
@@ -187,15 +193,15 @@ final class AutoRecommendationEngine {
 
         if codexOption != nil {
             defaultBackend = .codex
-            priorityPath = ["Codex CLI (\(inAppPlanning.modelLabel))", "OpenAI API", "Claude Code"]
+            priorityPath = ["Codex CLI (\(codexPlanningLabel))", "OpenAI API", "Claude Code"]
         } else if openAIOption != nil {
             defaultBackend = .openAI
             priorityPath = ["OpenAI API (\(apiPlanningModelLabel))", "Claude Code"]
-            upgradeHint = "Connect Codex CLI for \(inAppPlanning.modelLabel) – strong reasoning with practical usage limits (requires OpenAI Plus/Pro)."
+            upgradeHint = "Connect Codex CLI for \(codexPlanningLabel) – strong reasoning with practical usage limits (requires OpenAI Plus/Pro)."
         } else if claudeCodeOption != nil {
             defaultBackend = .claudeCode
             priorityPath = ["Claude Code"]
-            upgradeHint = "For best chat experience, connect Codex CLI (requires OpenAI Plus/Pro) for \(inAppPlanning.modelLabel) – balances quality with usage limits."
+            upgradeHint = "For best chat experience, connect Codex CLI (requires OpenAI Plus/Pro) for \(codexPlanningLabel) – balances quality with usage limits."
         } else {
             return nil
         }
@@ -236,11 +242,12 @@ final class AutoRecommendationEngine {
 
         // Priority 2: Codex CLI
         if status.codexCLI == .ready {
+            let modelRaw = Self.preferredCodexFamilyModelRaw("sol", effort: .medium, fallback: .gpt56SolMedium)
             codexOption = ChatBackendOption(
                 kind: .codex,
                 displayName: "Codex CLI",
-                modelString: AIModel.codexCustom(name: "gpt-6-sol-medium").rawValue,
-                description: "GPT-6 Sol Medium via Codex CLI",
+                modelString: AIModel.codexCustom(name: modelRaw).rawValue,
+                description: "\(AgentModelCatalog.displayName(for: modelRaw, agentKind: .codexExec)) via Codex CLI",
                 tradeoffs: [
                     "• Superior reasoning capabilities",
                     "• Excellent for complex tasks",
@@ -292,6 +299,14 @@ final class AutoRecommendationEngine {
         )
     }
 
+    private static func preferredCodexFamilyModelRaw(
+        _ family: String,
+        effort: CodexReasoningEffort,
+        fallback: AgentModel
+    ) -> String {
+        AgentModelCatalog.preferredCodexFamilyModelRaw(family, effort: effort) ?? fallback.rawValue
+    }
+
     // MARK: - Context Builder Recommendation
 
     private func computeContextBuilderRecommendation(
@@ -309,9 +324,11 @@ final class AutoRecommendationEngine {
         // Cursor is a fallback only; it does not take priority over existing recommended providers.
         // Note: codexExec agent requires Codex CLI specifically, not just OpenAI API key
         if status.codexCLI == .ready {
+            let modelRaw = preferredCodexFamilyModelRaw("luna", effort: .low, fallback: .gpt56LunaLow)
+            let model = AgentModel.resolvedModel(forRaw: modelRaw, agentKind: .codexExec) ?? .gpt56LunaLow
             return ContextBuilderRecommendation(
                 recommendedAgent: .codexExec,
-                recommendedModel: .gpt6LunaLow,
+                recommendedModel: model,
                 rationale: BestPracticeProfiles.contextBuilderRationale
             )
         } else if status.claudeCodeCLI == .ready {
@@ -614,9 +631,12 @@ final class AutoRecommendationEngine {
         case .claudeCode:
             rec.claudeCodeOption?.modelString ?? AIModel.claudeCodeOpus.rawValue
         case .codex:
-            rec.codexOption?.modelString ?? AIModel.codexCustom(name: "gpt-6-sol-high").rawValue
+            rec.codexOption?.modelString ?? AIModel.codexCustom(
+                name: Self.preferredCodexFamilyModelRaw("sol", effort: .high, fallback: .gpt56SolHigh)
+            ).rawValue
         case .openAI:
-            rec.openAIOption?.modelString ?? AIModel.gpt54Pro.rawValue
+            rec.openAIOption?.modelString
+                ?? AIModel.openaiCustomReasoning(name: "gpt-6-sol", effort: .high).rawValue
         }
         let trimmedModel = modelString.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedModel.isEmpty ? nil : trimmedModel

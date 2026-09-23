@@ -291,16 +291,6 @@ enum AgentModel: String, CaseIterable, Codable {
         case .codexExec:
             [
                 .defaultModel,
-                .gpt6SolLow,
-                .gpt6SolMedium,
-                .gpt6SolHigh,
-                .gpt6SolXHigh,
-                .gpt6SolMax,
-                .gpt6LunaLow,
-                .gpt6LunaMedium,
-                .gpt6LunaHigh,
-                .gpt6LunaXHigh,
-                .gpt6LunaMax,
                 .gpt56SolLow,
                 .gpt56SolMedium,
                 .gpt56SolHigh,
