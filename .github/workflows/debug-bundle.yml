@@ -1,0 +1,53 @@
+name: Debug Bundle (smoke)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/debug-bundle-smoke
+
+permissions:
+  contents: read
+
+jobs:
+  package-debug:
+    name: Package ad-hoc debug app
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Restore SwiftPM build cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            .build
+            Packages/RepoPromptAgentProviders/.build
+          key: ${{ runner.os }}-${{ runner.arch }}-swiftpm-${{ hashFiles('Package.swift', 'Package.resolved', 'Packages/RepoPromptAgentProviders/Package.swift', 'Packages/RepoPromptAgentProviders/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-swiftpm-
+
+      - name: Package debug app (ad-hoc signed, ephemeral secure storage)
+        env:
+          ALLOW_ADHOC_SIGNING: "1"
+        run: ./Scripts/package_app.sh debug
+
+      - name: Archive bundle
+        run: |
+          set -euo pipefail
+          test -d .build/debug/RepoPrompt.app
+          ditto -c -k --keepParent --sequesterRsrc .build/debug/RepoPrompt.app RepoPrompt-debug.app.zip
+          shasum -a 256 RepoPrompt-debug.app.zip | tee RepoPrompt-debug.app.zip.sha256
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: repoprompt-debug-app
+          path: |
+            RepoPrompt-debug.app.zip
+            RepoPrompt-debug.app.zip.sha256
+          retention-days: 3
+          if-no-files-found: error
