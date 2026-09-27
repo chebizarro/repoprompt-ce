@@ -85,7 +85,7 @@ enum MCPFileSearchSemanticRerank {
         let ranked = candidates.indices.sorted { left, right in
             let leftScore = probabilities[ids[left]]
             let rightScore = probabilities[ids[right]]
-            switch (leftScore, rightScore) {
+            return switch (leftScore, rightScore) {
             case let (.some(a), .some(b)): a == b ? left < right : a > b
             case (.some, .none): true
             case (.none, .some): false
