@@ -113,8 +113,6 @@ struct AgentInputBar: View {
         AgentComposerActions(
             storeDraft: { tabID, text in agentModeVM.storeDraftText(for: tabID, text) },
             retrieveDraft: { tabID in agentModeVM.retrieveDraftText(for: tabID) },
-            useSuggestedSkill: { agentModeVM.useSuggestedSkill() },
-            dismissSuggestedSkill: { agentModeVM.dismissSuggestedSkill() },
             claimSubmit: { attempt in agentModeVM.claimComposerSubmitAttempt(attempt) },
             executeSubmit: { claim, text in
                 await agentModeVM.executeComposerSubmitAttempt(text: text, claim: claim)
@@ -136,6 +134,8 @@ struct AgentInputBar: View {
                 return await agentModeVM.agentWorkspaceLookupContext(tabID: tabID)
             },
             slashSkillSuggestions: { query in await agentModeVM.slashSkillSuggestions(for: query) },
+            useSuggestedSkill: { agentModeVM.useSuggestedSkill() },
+            dismissSuggestedSkill: { agentModeVM.dismissSuggestedSkill() },
             modelOptions: { agent, includeClaudeEffortVariants in
                 agentModeVM.modelOptions(for: agent, includeClaudeEffortVariants: includeClaudeEffortVariants)
             },

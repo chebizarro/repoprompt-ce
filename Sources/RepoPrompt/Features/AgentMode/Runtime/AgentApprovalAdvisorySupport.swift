@@ -19,7 +19,7 @@ enum AgentApprovalAdvisorySupport {
     static func enrichWithIrreversibilityHint(
         session: AgentTabSession,
         request: AgentApprovalRequest,
-        service: any JevContentJudging,
+        service: (any JevContentJudging)?,
         gateOverride: Bool? = nil,
         onEnriched: @MainActor () -> Void = {}
     ) async {
@@ -46,6 +46,10 @@ enum AgentApprovalAdvisorySupport {
 
         guard gateOverride ?? GlobalSettingsStore.shared.contentJudgmentsEnabled(workspaceID: session.workspaceID) else {
             audit(.disabled)
+            return
+        }
+        guard let service else {
+            audit(.unavailable)
             return
         }
         let state = State(

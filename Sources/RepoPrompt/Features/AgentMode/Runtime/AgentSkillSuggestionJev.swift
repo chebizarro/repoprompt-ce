@@ -30,7 +30,7 @@ enum AgentSkillSuggestionJev {
     static func suggest(
         text: String,
         skills: [AgentSkillDefinition],
-        service: any JevContentJudging
+        service: (any JevContentJudging)?
     ) async -> Outcome {
         let consumer = JevContentJudgmentConsumer.skillSuggestion
         func outcome(
@@ -61,6 +61,7 @@ enum AgentSkillSuggestionJev {
               Set(skills.map(\.name)).count == skills.count,
               !skills.contains(where: { $0.name == Policy.noneKey })
         else { return outcome(.ineligible) }
+        guard let service else { return outcome(.unavailable) }
         let catalog = Dictionary(uniqueKeysWithValues: skills.map {
             ($0.name, String(($0.description ?? $0.name).prefix(Policy.descriptionChars)))
         })
