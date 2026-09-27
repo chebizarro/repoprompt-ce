@@ -72,7 +72,7 @@ final class ToolResultDTOsContentJudgmentsTests: XCTestCase {
         XCTAssertEqual(try decoder.decode(ToolResultDTOs.SearchResultDTO.self, from: encoder.encode(search)), search)
         XCTAssertEqual(try decoder.decode(ToolResultDTOs.ReadFileReply.self, from: encoder.encode(read)), read)
 
-        let formatted = ToolOutputFormatter.formatReadFile(args: ["path": .string("sample.txt")], value: Value(read))
+        let formatted = try ToolOutputFormatter.formatReadFile(args: ["path": .string("sample.txt")], value: Value(read))
         XCTAssertTrue(formatted.contains { content in
             guard case let .text(text, _, _) = content else { return false }
             return text.contains("## File Read ✅") && text.contains("… [lines 2–8 omitted] …")
