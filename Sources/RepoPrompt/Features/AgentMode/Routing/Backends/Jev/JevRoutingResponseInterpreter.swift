@@ -69,29 +69,34 @@ struct JevRoutingResponseInterpreter {
         _ answer: JevRoutingWireResponse.Answer,
         submittedOpaqueKeys: Set<String>
     ) throws -> ValidatedAnswer {
+        // The wire answer type is shared with non-routing question types, so the choice fields are
+        // optional at decode time. Routing requires all three, exactly as before the widening.
         guard answer.type == JevJudgmentQuestion.choiceType,
-              submittedOpaqueKeys.contains(answer.choice)
+              let choice = answer.choice,
+              submittedOpaqueKeys.contains(choice)
         else { throw ValidationError.wrongAnswerShape }
-        guard Set(answer.probabilities.keys) == submittedOpaqueKeys else {
+        guard let probabilities = answer.probabilities,
+              Set(probabilities.keys) == submittedOpaqueKeys
+        else {
             throw ValidationError.unknownOrMissingCandidates
         }
-        guard answer.probabilities.values.allSatisfy({ $0.isFinite && (0 ... 1).contains($0) }) else {
+        guard probabilities.values.allSatisfy({ $0.isFinite && (0 ... 1).contains($0) }) else {
             throw ValidationError.invalidProbability
         }
-        let sum = answer.probabilities.values.reduce(0, +)
+        let sum = probabilities.values.reduce(0, +)
         guard abs(sum - 1) <= 0.000_1 else { throw ValidationError.invalidProbability }
-        guard let maximum = answer.probabilities.values.max() else {
+        guard let maximum = probabilities.values.max() else {
             throw ValidationError.invalidProbability
         }
-        let winners = answer.probabilities.filter { $0.value == maximum }.map(\.key)
-        guard winners == [answer.choice] else { throw ValidationError.nonUniqueWinningChoice }
-        guard answer.confidence.isFinite, (0 ... 1).contains(answer.confidence) else {
+        let winners = probabilities.filter { $0.value == maximum }.map(\.key)
+        guard winners == [choice] else { throw ValidationError.nonUniqueWinningChoice }
+        guard let confidence = answer.confidence, confidence.isFinite, (0 ... 1).contains(confidence) else {
             throw ValidationError.invalidConfidence
         }
         return ValidatedAnswer(
-            selectedOpaqueKey: answer.choice,
-            probabilities: answer.probabilities,
-            confidence: answer.confidence
+            selectedOpaqueKey: choice,
+            probabilities: probabilities,
+            confidence: confidence
         )
     }
 }

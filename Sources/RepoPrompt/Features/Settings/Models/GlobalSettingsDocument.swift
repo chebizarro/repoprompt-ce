@@ -27,7 +27,8 @@ private func strictAdditionalOracleModelRaws(_ raws: [String], codingPath: [Codi
 /// behavior group from pre-Context-Builder typed writers. Schema v7 adds the Oracle
 /// roster. Schema v8 adds OpenCode-style ACP parameter pins to Agent Models profiles.
 /// Schema v9 adds the optional app-global model-router policy group. Schema v10
-/// adds global primary/subagent scope policy and custom router guidance.
+/// adds global primary/subagent scope policy and custom router guidance. Schema v11
+/// adds the per-workspace Jev content-judgments opt-in.
 /// Scalar fields stay optional so missing JSON fields fall back through the
 /// typed GlobalSettingsStore accessors without losing current default behavior.
 struct GlobalSettingsDocument: Codable {
@@ -46,8 +47,10 @@ struct GlobalSettingsDocument: Codable {
     /// Initial optional app-global model-router configuration.
     static let modelRouterSchemaVersion = 9
     static let scopedModelRouterSchemaVersion = 10
+    /// Per-workspace opt-in for Jev content judgments. Absent/empty map stays below v11.
+    static let contentJudgmentsSchemaVersion = 11
     static let rejectedExperimentalSchemaVersions = 6 ... 6
-    static let currentSchemaVersion = 10
+    static let currentSchemaVersion = 11
     /// Lineage marker for settings files written by this open-source CE schema family.
     ///
     /// CE inherited numeric schema versions from classic/internal builds, so version numbers
@@ -65,6 +68,7 @@ struct GlobalSettingsDocument: Codable {
     var copySettingsByWorkspaceID: [String: CopyGlobalSettings]
     var chatSettingsByWorkspaceID: [String: ChatGlobalSettings]
     var agentModelsSettingsByWorkspaceID: [String: WorkspaceAgentModelsSettings]?
+    var contentJudgmentsByWorkspaceID: [String: WorkspaceContentJudgmentsSettings]?
     var globalDefaults: GlobalDefaults
     var scalarPreferences: GlobalScalarPreferences?
 
@@ -74,6 +78,7 @@ struct GlobalSettingsDocument: Codable {
         copySettings: [UUID: CopyGlobalSettings] = [:],
         chatSettings: [UUID: ChatGlobalSettings] = [:],
         agentModelsSettings: [UUID: WorkspaceAgentModelsSettings] = [:],
+        contentJudgmentsSettings: [UUID: WorkspaceContentJudgmentsSettings] = [:],
         globalDefaults: GlobalDefaults = GlobalDefaults(discoverAgentRaw: nil, discoverModelsByAgent: nil),
         scalarPreferences: GlobalScalarPreferences? = nil
     ) {
@@ -85,6 +90,9 @@ struct GlobalSettingsDocument: Codable {
         agentModelsSettingsByWorkspaceID = agentModelsSettings.isEmpty
             ? nil
             : Self.encodeUUIDKeyedDictionary(agentModelsSettings)
+        contentJudgmentsByWorkspaceID = contentJudgmentsSettings.isEmpty
+            ? nil
+            : Self.encodeUUIDKeyedDictionary(contentJudgmentsSettings)
         self.globalDefaults = globalDefaults
         self.scalarPreferences = scalarPreferences
     }
@@ -99,6 +107,10 @@ struct GlobalSettingsDocument: Codable {
 
     var agentModelsSettings: [UUID: WorkspaceAgentModelsSettings] {
         Self.decodeUUIDKeyedDictionary(agentModelsSettingsByWorkspaceID ?? [:])
+    }
+
+    var contentJudgmentsSettings: [UUID: WorkspaceContentJudgmentsSettings] {
+        Self.decodeUUIDKeyedDictionary(contentJudgmentsByWorkspaceID ?? [:])
     }
 
     /// Lowest CE schema version that can faithfully represent this document's content.
@@ -139,6 +151,9 @@ struct GlobalSettingsDocument: Codable {
                 requiredVersion = max(requiredVersion, Self.scopedModelRouterSchemaVersion)
             }
         }
+        if let contentJudgmentsByWorkspaceID, !contentJudgmentsByWorkspaceID.isEmpty {
+            requiredVersion = max(requiredVersion, Self.contentJudgmentsSchemaVersion)
+        }
         return requiredVersion
     }
 
@@ -146,6 +161,7 @@ struct GlobalSettingsDocument: Codable {
         copySettings: [UUID: CopyGlobalSettings],
         chatSettings: [UUID: ChatGlobalSettings],
         agentModelsSettings: [UUID: WorkspaceAgentModelsSettings],
+        contentJudgmentsSettings: [UUID: WorkspaceContentJudgmentsSettings]? = nil,
         globalDefaults: GlobalDefaults,
         scalarPreferences: GlobalScalarPreferences? = nil,
         updatedAt: Date = Date()
@@ -156,6 +172,7 @@ struct GlobalSettingsDocument: Codable {
             copySettings: copySettings,
             chatSettings: chatSettings,
             agentModelsSettings: agentModelsSettings,
+            contentJudgmentsSettings: contentJudgmentsSettings ?? self.contentJudgmentsSettings,
             globalDefaults: globalDefaults,
             scalarPreferences: scalarPreferences ?? self.scalarPreferences
         )
@@ -573,6 +590,25 @@ struct WorkspaceAgentModelsSettings: Codable, Equatable {
         inheritanceMode = try container.decodeIfPresent(AgentModelsInheritanceMode.self, forKey: .inheritanceMode)
             ?? .useGlobalSettings
         profile = try container.decodeIfPresent(AgentModelsSettingsProfile.self, forKey: .profile)
+    }
+}
+
+/// Per-workspace opt-in for Jev content judgments. An absent map or entry means disabled;
+/// there is no global default and no inheritance mode.
+struct WorkspaceContentJudgmentsSettings: Codable, Equatable {
+    var enabled: Bool
+
+    init(enabled: Bool = false) {
+        self.enabled = enabled
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
     }
 }
 

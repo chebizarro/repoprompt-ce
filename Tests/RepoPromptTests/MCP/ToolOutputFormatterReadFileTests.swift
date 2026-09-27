@@ -188,6 +188,45 @@ final class ToolOutputFormatterReadFileTests: XCTestCase {
         }
     }
 
+    func testWindowedReplyRendersExactRangesAndElision() throws {
+        let reply = ToolResultDTOs.ReadFileReply(
+            content: "first\n… [lines 41–87 omitted; pass relevant_to=nil or start_line/limit to read them] …\nlast",
+            totalLines: 300,
+            firstLine: 12,
+            lastLine: 101,
+            displayPath: "File.swift",
+            lineRanges: [.init(start: 12, end: 40), .init(start: 88, end: 101)],
+            relevantTo: "entry point"
+        )
+        let text = try Self.onlyText(ToolOutputFormatter.formatReadFile(
+            args: ["path": .string("File.swift")], value: Value(reply)
+        ))
+
+        XCTAssertTrue(text.contains("**Lines**: 12–40, 88–101 of 300"), text)
+        XCTAssertFalse(text.contains("**Lines**: 12–101 of 300"), text)
+        XCTAssertTrue(text.contains("lines 41–87 omitted"), text)
+    }
+
+    func testFallbackProjectionKeepsRangesWithWholeNumberDoubleMetadata() throws {
+        let text = try Self.onlyText(ToolOutputFormatter.formatReadFile(
+            args: ["path": .string("File.swift")],
+            value: .object([
+                "content": .string("first\nlast"),
+                "first_line": .double(12),
+                "last_line": .double(101),
+                "total_lines": .double(300),
+                "line_ranges": .array([
+                    .object(["start": .int(12), "end": .int(40)]),
+                    .object(["start": .int(88), "end": .int(101)])
+                ]),
+                "relevant_to": .string("entry point")
+            ])
+        ))
+
+        XCTAssertTrue(text.contains("## File Read ✅"), text)
+        XCTAssertTrue(text.contains("**Lines**: 12–40, 88–101 of 300"), text)
+    }
+
     private static func onlyText(_ blocks: [MCP.Tool.Content]) throws -> String {
         let first = try XCTUnwrap(blocks.first)
         guard case let .text(text, _, _) = first else {

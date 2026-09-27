@@ -14,6 +14,7 @@ struct RouterSettingsView: View {
                 header
                 statusCard
                 autoEffortCard
+                contentJudgmentsCard
                 backendCard
                 routingPolicyCard
                 candidatesCard
@@ -110,6 +111,48 @@ struct RouterSettingsView: View {
                 .foregroundStyle(.secondary)
             Link("TypeSafe privacy policy", destination: URL(string: "https://typesafe.ai/legal/privacy-policy")!)
                 .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
+        }
+    }
+
+    private var contentJudgmentsCard: some View {
+        card {
+            Label("Content Judgments", systemImage: "text.magnifyingglass").font(.headline)
+            Text("Let Jev score search results and file text for relevance so agents read less. Off for every workspace unless you enable it here.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            let workspaces = viewModel.contentJudgmentsWorkspaces
+            if workspaces.isEmpty {
+                Text("No saved workspaces yet.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(workspaces) { workspace in
+                    Toggle(workspace.name, isOn: Binding(
+                        get: { workspace.enabled },
+                        set: { viewModel.requestContentJudgmentsChange($0, workspace: workspace) }
+                    ))
+                    .toggleStyle(.switch)
+                    .accessibilityLabel("Content judgments for \(workspace.name)")
+                }
+            }
+            Text("When enabled for a workspace, search/read relevance text is sent to TypeSafe (Jev) for ranking. See docs/architecture/jev-content-judgments.md.")
+                .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Link("TypeSafe privacy policy", destination: URL(string: "https://typesafe.ai/legal/privacy-policy")!)
+                .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
+        }
+        .confirmationDialog(
+            "Enable Content Judgments?",
+            isPresented: Binding(
+                get: { viewModel.pendingContentJudgmentsEnable != nil },
+                set: { if !$0 { viewModel.cancelPendingContentJudgmentsEnable() } }
+            ),
+            presenting: viewModel.pendingContentJudgmentsEnable
+        ) { workspace in
+            Button("Enable for \(workspace.name)", action: viewModel.confirmPendingContentJudgmentsEnable)
+            Button("Cancel", role: .cancel, action: viewModel.cancelPendingContentJudgmentsEnable)
+        } message: { workspace in
+            Text("For \(workspace.name), when an agent asks for relevance ranking, TypeSafe Jev receives the query plus the file text being judged: matching search lines with their file paths, or the contents of the file being read. Secrets or sensitive text in those files can be sent. Nothing is sent for workspaces that are not enabled. See the TypeSafe privacy policy linked in Model Router Settings.")
         }
     }
 
