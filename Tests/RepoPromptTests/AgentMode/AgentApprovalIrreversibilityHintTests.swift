@@ -16,7 +16,8 @@ final class AgentApprovalIrreversibilityHintTests: XCTestCase {
             budget: Duration,
             consumer: JevContentJudgmentConsumer
         ) async -> JevContentJudgmentResult {
-            result
+            submittedState = batch.state
+            return result
         }
 
         func recordBytesAvoided(_ bytes: Int, consumer: JevContentJudgmentConsumer) async {}
@@ -36,10 +37,7 @@ final class AgentApprovalIrreversibilityHintTests: XCTestCase {
             grantRoot: "/secret",
             proposedExecpolicyAmendmentJSON: "secret-policy",
             details: [AgentApprovalDetail(label: "Command", value: "rm temp.txt")]
-        ) async -> JevContentJudgmentResult {
-            submittedState = batch.state
-            return result
-        }
+        )
     }
 
     private func positive() -> JevContentJudgmentResult {
