@@ -118,6 +118,7 @@ final class MCPFileSearchSemanticRerankTests: XCTestCase {
             semanticRerank: nil
         )
         let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
         XCTAssertEqual(try encoder.encode(baseline), try encoder.encode(withDisabledGate))
         XCTAssertFalse(try String(decoding: encoder.encode(baseline), as: UTF8.self).contains("semantic_rerank"))
     }
