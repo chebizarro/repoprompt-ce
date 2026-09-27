@@ -2942,7 +2942,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                   currentTabID == tabID
             else { return }
             let consumer = JevContentJudgmentConsumer.skillSuggestion
-            func recordSkip(_ decision: AgentAutomationTurnAudit.Decision) {
+            @MainActor func recordSkip(_ decision: AgentAutomationTurnAudit.Decision) {
                 session.appendContentJudgmentAudit(AgentContentJudgmentAudit(
                     id: UUID(),
                     createdAt: Date(),
