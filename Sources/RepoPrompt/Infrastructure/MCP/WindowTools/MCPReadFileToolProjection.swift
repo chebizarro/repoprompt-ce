@@ -197,10 +197,6 @@ enum MCPReadFileToolProjection {
                 message: reply.message,
                 displayPath: displayPath,
                 worktreeScope: worktreeScope,
-                errorMessage: reply.errorMessage,
-                errorCode: reply.errorCode,
-                retryable: reply.retryable,
-                retryAfterMilliseconds: reply.retryAfterMilliseconds,
                 lineRanges: reply.lineRanges,
                 relevantTo: reply.relevantTo,
                 semanticFilter: reply.semanticFilter

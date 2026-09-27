@@ -142,6 +142,26 @@ final class MCPReadFileRelevantToTests: XCTestCase {
         XCTAssertEqual(projected.semanticFilter, filter)
     }
 
+    @MainActor
+    func testReplyProjectionKeepsLegacyErrorFieldOmission() async throws {
+        let reply = ToolResultDTOs.ReadFileReply(
+            content: "line 1",
+            totalLines: 1,
+            firstLine: 1,
+            lastLine: 1,
+            errorMessage: "unavailable",
+            errorCode: "read_failed",
+            retryable: true,
+            retryAfterMilliseconds: 100
+        )
+
+        let projected = try await Projection.projectReply(reply, displayPath: "file.swift", worktreeScope: nil)
+        XCTAssertNil(projected.errorMessage)
+        XCTAssertNil(projected.errorCode)
+        XCTAssertNil(projected.retryable)
+        XCTAssertNil(projected.retryAfterMilliseconds)
+    }
+
     func testNoQualifyingWindowsReturnsNilForFullReadFallback() {
         let original = makeReply(firstLine: 1, count: 128, totalLines: 128)
         let windows = Projection.windows(in: original)
@@ -165,10 +185,16 @@ final class MCPReadFileRelevantToTests: XCTestCase {
             original, relevantTo: "needle", enabled: false, judge: fake
         )
 
-        let encodedResult = try JSONEncoder().encode(result.reply)
-        let encodedOriginal = try JSONEncoder().encode(original)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let encodedResult = try encoder.encode(result.reply)
+        let encodedOriginal = try encoder.encode(original)
         XCTAssertEqual(encodedResult, encodedOriginal)
-        XCTAssertNil(result.reply.semanticFilter)
+
+        let encodedObject = try XCTUnwrap(JSONSerialization.jsonObject(with: encodedResult) as? [String: Any])
+        XCTAssertNil(encodedObject["line_ranges"])
+        XCTAssertNil(encodedObject["relevant_to"])
+        XCTAssertNil(encodedObject["semantic_filter"])
         let calls = await fake.callCount()
         XCTAssertEqual(calls, 0)
     }
