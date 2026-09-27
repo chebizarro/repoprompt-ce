@@ -1,5 +1,33 @@
 import SwiftUI
 
+/// Optional composer hint. Choosing it only inserts a slash invocation into the draft.
+struct AgentSuggestedSkillPill: View {
+    let skill: AgentSkillDefinition
+    let onUse: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text("Suggested skill: /\(skill.name)")
+                .font(.caption)
+                .lineLimit(1)
+            if let description = skill.description, !description.isEmpty {
+                Text("— \(String(description.prefix(48)))")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            Button("Use", action: onUse)
+                .buttonStyle(.borderless)
+            Button("Dismiss", action: onDismiss)
+                .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.ultraThinMaterial, in: Capsule())
+    }
+}
+
 // MARK: - Workflow Pill
 
 /// Pill for selecting a workflow template that wraps user input before sending.

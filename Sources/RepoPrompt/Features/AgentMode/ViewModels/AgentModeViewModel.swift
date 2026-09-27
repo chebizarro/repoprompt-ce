@@ -688,6 +688,10 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     /// picker tests never touch a live ACP process.
     private let openCodeModelParameterStreamProvider: (String?, String) async -> AsyncStream<OpenCodeACPModelParameterSnapshot>
     private let skillCatalog: AgentSkillCatalog
+    @Published var suggestedSkill: AgentSkillDefinition? = nil
+    var suggestedSkillTabID: UUID?
+    private var skillSuggestionTask: Task<Void, Never>?
+    private var dismissedSkillSuggestionDraft: (tabID: UUID, text: String)?
     private let headlessProviderFactory: HeadlessProviderFactory
     private let acpProviderFactory: ACPProviderFactory
     private let acpControllerFactory: ACPControllerFactory
@@ -2738,6 +2742,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         cursorModelsSubscriptionTask?.cancel()
         skillCatalogDeltaObservationTask?.cancel()
         skillCatalogRefreshDebounceTask?.cancel()
+        skillSuggestionTask?.cancel()
         initialSystemWorkspaceSessionListRefreshDeferralFallbackTask?.cancel()
         sessionListCacheTask?.cancel()
         sessionListCacheGeneration &+= 1
@@ -2920,6 +2925,76 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             return
         }
         await skillCatalog.refreshIfNeeded(workspacePaths: paths, agentKind: agent)
+    }
+
+    func scheduleSkillSuggestion(for tabID: UUID, text: String) {
+        skillSuggestionTask?.cancel()
+        suggestedSkill = nil
+        suggestedSkillTabID = nil
+        if tabID == currentTabID { syncStatusPillsUIState() }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        skillSuggestionTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: JevContentJudgmentPolicy.SkillSuggestion.debounce)
+            guard !Task.isCancelled, let self,
+                  let session = session(for: tabID, createIfNeeded: true),
+                  retrieveDraftText(for: tabID) == text,
+                  currentTabID == tabID
+            else { return }
+            let consumer = JevContentJudgmentConsumer.skillSuggestion
+            func recordSkip(_ decision: AgentAutomationTurnAudit.Decision) {
+                session.appendContentJudgmentAudit(AgentContentJudgmentAudit(
+                    id: UUID(),
+                    createdAt: Date(),
+                    consumer: consumer.rawValue,
+                    policyVersion: consumer.policyVersion,
+                    decision: decision,
+                    applied: false
+                ))
+            }
+            guard GlobalSettingsStore.shared.contentJudgmentsEnabled(workspaceID: session.workspaceID) else {
+                recordSkip(.disabled)
+                return
+            }
+            guard !trimmed.hasPrefix("/"), resolvedSlashSkillInvocations(in: trimmed).isEmpty else {
+                recordSkip(.ineligible)
+                return
+            }
+            guard dismissedSkillSuggestionDraft?.tabID != tabID
+                || dismissedSkillSuggestionDraft?.text != text else { return }
+            let skills = skillCatalog.suggestions(
+                prefix: "",
+                limit: JevContentJudgmentPolicy.SkillSuggestion.catalogLimit
+            )
+            guard !skills.isEmpty else {
+                recordSkip(.ineligible)
+                return
+            }
+            let service = WindowStatesManager.shared.modelRouterRuntime.contentJudgments
+            let result = await AgentSkillSuggestionJev.suggest(text: trimmed, skills: skills, service: service)
+            guard !Task.isCancelled, retrieveDraftText(for: tabID) == text,
+                  currentTabID == tabID else { return }
+            session.appendContentJudgmentAudit(result.audit)
+            suggestedSkill = result.skill
+            suggestedSkillTabID = result.skill == nil ? nil : tabID
+            syncStatusPillsUIState()
+        }
+    }
+
+    func dismissSuggestedSkill() {
+        if let tabID = currentTabID {
+            dismissedSkillSuggestionDraft = (tabID, retrieveDraftText(for: tabID))
+        }
+        skillSuggestionTask?.cancel()
+        suggestedSkill = nil
+        suggestedSkillTabID = nil
+        syncStatusPillsUIState()
+    }
+
+    func useSuggestedSkill() -> String? {
+        guard suggestedSkillTabID == currentTabID, let skill = suggestedSkill else { return nil }
+        dismissSuggestedSkill()
+        return "/\(skill.name) "
     }
 
     private func scheduleInitialSkillCatalogRefresh() {
@@ -4406,6 +4481,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
 
     private func makeSession(for tabID: UUID) -> TabSession {
         let newSession = TabSession(tabID: tabID)
+        newSession.workspaceID = workspaceManager?.activeWorkspace?.id
         newSession.onSourceItemsChanged = { [weak self] session, mutation in
             guard let self else { return }
             if mutation.touchesUserItem {
@@ -5693,10 +5769,12 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         }
 
         session.runState = payload.normalizedRunState
+        session.workspaceID = agentSession.workspaceID
         session.providerSessionID = agentSession.providerSessionID
         session.providerCleanupHandle = agentSession.resolvedProviderCleanupHandle
         session.providerTokenUsageByTurn = agentSession.providerTokenUsageByTurn
         session.automationTurnAudit = agentSession.automationTurnAudit
+        session.contentJudgmentAudit = agentSession.contentJudgmentAudit
         session.pendingHandoff = PendingHandoffState(
             payload: agentSession.pendingHandoffPayload,
             createdAt: agentSession.pendingHandoffCreatedAt,
@@ -15258,6 +15336,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             periodicIdleWakeIntervalSeconds: session.oversight.periodicIdleWakeIntervalSeconds,
             providerTokenUsageByTurn: session.providerTokenUsageByTurn,
             automationTurnAudit: session.automationTurnAudit,
+            contentJudgmentAudit: session.contentJudgmentAudit,
             parentSessionID: session.parentSessionID,
             pendingHandoffPayload: session.pendingHandoff.payload,
             pendingHandoffCreatedAt: session.pendingHandoff.createdAt,

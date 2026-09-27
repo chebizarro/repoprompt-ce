@@ -23,6 +23,8 @@ struct AgentComposerActions {
     let removeTaggedFile: (_ tabID: UUID, _ attachmentID: UUID) -> Void
     let agentWorkspaceLookupContext: (_ tabID: UUID?) async -> WorkspaceLookupContext
     let slashSkillSuggestions: (_ query: String) async -> [MentionSuggestion]
+    let useSuggestedSkill: () -> String?
+    let dismissSuggestedSkill: () -> Void
     let modelOptions: (_ agent: AgentProviderKind, _ includeClaudeEffortVariants: Bool) -> [AgentModelOption]
     let canSelectAgentInCurrentChat: (_ agent: AgentProviderKind) -> Bool
     let selectAgentModel: (_ agent: AgentProviderKind, _ rawModel: String) -> Void
@@ -88,6 +90,7 @@ struct AgentInputBar: View {
         AgentComposerView(
             props: composerUI.props,
             placeholderText: composerPlaceholderText,
+            suggestedSkill: statusPillsUI.snapshot.suggestedSkill,
             actions: composerActions,
             promptManager: promptManager,
             workspaceSearchService: workspaceSearchService,
@@ -110,6 +113,8 @@ struct AgentInputBar: View {
         AgentComposerActions(
             storeDraft: { tabID, text in agentModeVM.storeDraftText(for: tabID, text) },
             retrieveDraft: { tabID in agentModeVM.retrieveDraftText(for: tabID) },
+            useSuggestedSkill: { agentModeVM.useSuggestedSkill() },
+            dismissSuggestedSkill: { agentModeVM.dismissSuggestedSkill() },
             claimSubmit: { attempt in agentModeVM.claimComposerSubmitAttempt(attempt) },
             executeSubmit: { claim, text in
                 await agentModeVM.executeComposerSubmitAttempt(text: text, claim: claim)
@@ -246,6 +251,7 @@ enum AgentFileMentionText {
 struct AgentComposerView: View, Equatable {
     let props: AgentComposerProps
     let placeholderText: String
+    let suggestedSkill: AgentSkillDefinition?
     let actions: AgentComposerActions
     let promptManager: PromptViewModel
     let workspaceSearchService: WorkspaceSearchService
@@ -306,7 +312,7 @@ struct AgentComposerView: View, Equatable {
             rhsProps: rhs.props,
             rhsPlaceholderText: rhs.placeholderText,
             rhsCurrentTabID: rhs.currentTabID
-        )
+        ) && lhs.suggestedSkill == rhs.suggestedSkill
     }
 
     private var hasPendingImageAttachments: Bool {
@@ -652,6 +658,18 @@ struct AgentComposerView: View, Equatable {
             // out of view in narrower windows.
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
+                    if let suggestedSkill {
+                        AgentSuggestedSkillPill(
+                            skill: suggestedSkill,
+                            onUse: {
+                                if let invocation = actions.useSuggestedSkill() {
+                                    setLocalInputText(invocation + localInputText)
+                                    isFocused = true
+                                }
+                            },
+                            onDismiss: actions.dismissSuggestedSkill
+                        )
+                    }
                     if isCurrentTabMCPControlled {
                         mcpControlChip
                     }

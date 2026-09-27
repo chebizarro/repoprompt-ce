@@ -1051,6 +1051,14 @@ final class ACPIntegratedAgentModeRunner {
                 await hooks.transcript.handleHeadlessStreamResult(result, session, runID, runAttemptID)
             case let .approvalRequested(request):
                 session.pendingApproval = request
+                Task { @MainActor in
+                    await AgentApprovalAdvisorySupport.enrichWithIrreversibilityHint(
+                        session: session,
+                        request: request,
+                        service: WindowStatesManager.shared.modelRouterRuntime.contentJudgments,
+                        onEnriched: { hooks.bindingObservation.updateBindings(session) }
+                    )
+                }
                 session.runState = .waitingForApproval
                 setRunningStatus(nil, source: nil, session: session, urgent: true)
             case let .approvalCancelled(requestID):
