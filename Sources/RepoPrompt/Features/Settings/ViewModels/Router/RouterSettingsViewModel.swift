@@ -48,12 +48,6 @@ final class RouterSettingsViewModel: ObservableObject {
         }
     }
 
-    struct ContentJudgmentsWorkspaceRow: Identifiable, Equatable {
-        let id: UUID
-        let name: String
-        let enabled: Bool
-    }
-
     @Published private(set) var backendOptions: [BackendOption] = []
     @Published private(set) var configuration: AgentTaskRouterConfiguration
     @Published private(set) var readiness: AgentTaskRouterBackendReadiness
@@ -62,8 +56,6 @@ final class RouterSettingsViewModel: ObservableObject {
     @Published private(set) var backendOperationFeedback: BackendOperationFeedback = .idle
     @Published private(set) var isPerformingBackendOperation = false
     @Published private(set) var policyCanBuildCandidates = false
-    /// Workspace awaiting explicit egress consent before content judgments are enabled.
-    @Published private(set) var pendingContentJudgmentsEnable: ContentJudgmentsWorkspaceRow?
 
     private let settingsStore: GlobalSettingsStore
     private let runtime: AgentTaskRouterRuntime
@@ -114,12 +106,6 @@ final class RouterSettingsViewModel: ObservableObject {
             .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.scheduleRefresh() }
-            .store(in: &cancellables)
-        workspaceManager.$workspaces
-            .map { $0.map(\.id) }
-            .removeDuplicates()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         scheduleRefresh()
     }
@@ -221,47 +207,9 @@ final class RouterSettingsViewModel: ObservableObject {
         objectWillChange.send()
     }
 
-    /// Saved (menu-visible) workspaces, plus any otherwise-hidden workspace that is still
-    /// opted in so it can always be turned off from here.
-    var contentJudgmentsWorkspaces: [ContentJudgmentsWorkspaceRow] {
-        guard let workspaceManager else { return [] }
-        let listed = workspaceManager.workspacesForMenu()
-        let listedIDs = Set(listed.map(\.id))
-        let optedInHidden = workspaceManager.workspaces.filter {
-            !listedIDs.contains($0.id) && settingsStore.contentJudgmentsEnabled(workspaceID: $0.id)
-        }
-        return (listed + optedInHidden).map { workspace in
-            ContentJudgmentsWorkspaceRow(
-                id: workspace.id,
-                name: workspace.name,
-                enabled: settingsStore.contentJudgmentsEnabled(workspaceID: workspace.id)
-            )
-        }
-    }
-
-    /// Disabling applies immediately; enabling waits for `confirmPendingContentJudgmentsEnable()`.
-    func requestContentJudgmentsChange(_ enabled: Bool, workspace: ContentJudgmentsWorkspaceRow) {
-        if enabled {
-            guard !settingsStore.contentJudgmentsEnabled(workspaceID: workspace.id) else { return }
-            pendingContentJudgmentsEnable = workspace
-        } else {
-            if pendingContentJudgmentsEnable?.id == workspace.id {
-                pendingContentJudgmentsEnable = nil
-            }
-            settingsStore.setContentJudgments(enabled: false, workspaceID: workspace.id)
-            objectWillChange.send()
-        }
-    }
-
-    func confirmPendingContentJudgmentsEnable() {
-        guard let pending = pendingContentJudgmentsEnable else { return }
-        pendingContentJudgmentsEnable = nil
-        settingsStore.setContentJudgments(enabled: true, workspaceID: pending.id)
-        objectWillChange.send()
-    }
-
-    func cancelPendingContentJudgmentsEnable() {
-        pendingContentJudgmentsEnable = nil
+    /// Read-only summary; the per-workspace toggle lives on the composer's content-judgments pill.
+    var contentJudgmentsEnabledWorkspaceCount: Int {
+        settingsStore.contentJudgmentsByWorkspaceID.values.count(where: \.enabled)
     }
 
     @discardableResult

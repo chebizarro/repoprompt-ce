@@ -173,53 +173,18 @@ final class RouterSettingsViewModelTests: XCTestCase {
         )
     }
 
-    func testContentJudgmentsEnableRequiresConfirmationAndDisableAppliesImmediately() throws {
+    func testContentJudgmentsCardCountsEnabledWorkspacesReadOnly() throws {
         let fixture = try makeFixture()
-        let visible = WorkspaceModel(name: "Visible", repoPaths: ["/tmp/cj-visible"], isSavedWorkspace: true)
-        let hidden = WorkspaceModel(
-            name: "Hidden", repoPaths: ["/tmp/cj-hidden"], isHiddenInMenus: true, isSavedWorkspace: true
-        )
-        fixture.workspace.workspaces = [visible, hidden]
-        XCTAssertEqual(fixture.viewModel.contentJudgmentsWorkspaces.map(\.id), [visible.id])
-        let row = try XCTUnwrap(fixture.viewModel.contentJudgmentsWorkspaces.first)
-        XCTAssertFalse(row.enabled)
+        XCTAssertEqual(fixture.viewModel.contentJudgmentsEnabledWorkspaceCount, 0)
 
-        fixture.viewModel.requestContentJudgmentsChange(true, workspace: row)
-        XCTAssertEqual(fixture.viewModel.pendingContentJudgmentsEnable?.id, visible.id)
-        XCTAssertFalse(fixture.store.contentJudgmentsEnabled(workspaceID: visible.id))
+        let first = UUID()
+        let second = UUID()
+        fixture.store.setContentJudgments(enabled: true, workspaceID: first)
+        fixture.store.setContentJudgments(enabled: true, workspaceID: second)
+        XCTAssertEqual(fixture.viewModel.contentJudgmentsEnabledWorkspaceCount, 2)
 
-        fixture.viewModel.cancelPendingContentJudgmentsEnable()
-        XCTAssertNil(fixture.viewModel.pendingContentJudgmentsEnable)
-        XCTAssertFalse(fixture.store.contentJudgmentsEnabled(workspaceID: visible.id))
-
-        fixture.viewModel.requestContentJudgmentsChange(true, workspace: row)
-        fixture.viewModel.confirmPendingContentJudgmentsEnable()
-        XCTAssertNil(fixture.viewModel.pendingContentJudgmentsEnable)
-        XCTAssertTrue(fixture.store.contentJudgmentsEnabled(workspaceID: visible.id))
-        XCTAssertFalse(fixture.store.contentJudgmentsEnabled(workspaceID: hidden.id))
-        XCTAssertEqual(fixture.viewModel.contentJudgmentsWorkspaces.first?.enabled, true)
-
-        let enabledRow = try XCTUnwrap(fixture.viewModel.contentJudgmentsWorkspaces.first)
-        fixture.viewModel.requestContentJudgmentsChange(false, workspace: enabledRow)
-        XCTAssertNil(fixture.viewModel.pendingContentJudgmentsEnable)
-        XCTAssertFalse(fixture.store.contentJudgmentsEnabled(workspaceID: visible.id))
-        XCTAssertFalse(fixture.store.hasAnyContentJudgmentsEnabled())
-    }
-
-    func testOptedInHiddenWorkspaceStaysListedSoItCanBeDisabled() throws {
-        let fixture = try makeFixture()
-        let hidden = WorkspaceModel(
-            name: "Hidden", repoPaths: ["/tmp/cj-hidden"], isHiddenInMenus: true, isSavedWorkspace: true
-        )
-        fixture.workspace.workspaces = [hidden]
-        XCTAssertTrue(fixture.viewModel.contentJudgmentsWorkspaces.isEmpty)
-
-        fixture.store.setContentJudgments(enabled: true, workspaceID: hidden.id)
-
-        XCTAssertEqual(
-            fixture.viewModel.contentJudgmentsWorkspaces,
-            [.init(id: hidden.id, name: "Hidden", enabled: true)]
-        )
+        fixture.store.setContentJudgments(enabled: false, workspaceID: first)
+        XCTAssertEqual(fixture.viewModel.contentJudgmentsEnabledWorkspaceCount, 1)
     }
 
     private struct Fixture {

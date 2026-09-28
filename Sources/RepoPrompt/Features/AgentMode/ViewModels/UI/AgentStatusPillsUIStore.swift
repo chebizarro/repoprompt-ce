@@ -26,6 +26,25 @@ struct AgentAutoEffortPillProps: Equatable {
     let feedback: AutoEffortTurnFeedback?
 }
 
+/// Per-workspace Jev content-judgments opt-in for the window's active workspace.
+///
+/// `workspaceID == nil` means the window has no active workspace, so the pill is disabled.
+struct AgentContentJudgmentsPillProps: Equatable {
+    let workspaceID: UUID?
+    let workspaceName: String?
+    let isOn: Bool
+    let isAvailable: Bool
+    let isAwaitingEnableConfirmation: Bool
+
+    static let noWorkspace = AgentContentJudgmentsPillProps(
+        workspaceID: nil,
+        workspaceName: nil,
+        isOn: false,
+        isAvailable: false,
+        isAwaitingEnableConfirmation: false
+    )
+}
+
 struct AgentStatusPillsSnapshot: Equatable {
     let currentTabID: UUID?
     let selectedWorkflow: AgentWorkflowDefinition?
@@ -37,6 +56,7 @@ struct AgentStatusPillsSnapshot: Equatable {
     let interviewFirst: Bool
     let modelRouter: AgentModelRouterPillProps
     let autoEffort: AgentAutoEffortPillProps
+    let contentJudgments: AgentContentJudgmentsPillProps
     let executionLocation: AgentExecutionLocationProps?
     let activeAgentSessionID: UUID?
     let activeRunID: UUID?
@@ -67,6 +87,7 @@ struct AgentStatusPillsSnapshot: Equatable {
             isJudging: false,
             feedback: nil
         ),
+        contentJudgments: .noWorkspace,
         executionLocation: nil,
         activeAgentSessionID: nil,
         activeRunID: nil,
