@@ -156,6 +156,36 @@ enum JevContentJudgmentPolicy {
     // MARK: - Context Builder (PR 2)
 
     enum ContextBuilder {
+        struct File: Encodable {
+            let path: String
+            let excerpt: String
+        }
+
+        private struct State: Encodable {
+            let task: String
+            let files: [String: File]
+        }
+
+        static func state(task: String, files: [String: File]) -> String? {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            guard let data = try? encoder.encode(State(task: task, files: files)) else { return nil }
+            return String(data: data, encoding: .utf8)
+        }
+
+        static func section(central: [String], useful: [String], unranked: [String]) -> String {
+            var lines = ["Likely relevant files", "central:"]
+            lines += central.map { "- \($0)" }
+            lines.append("useful context:")
+            lines += useful.map { "- \($0)" }
+            if !unranked.isEmpty {
+                lines.append("unranked selected files:")
+                lines += unranked.map { "- \($0)" }
+            }
+            lines.append("Other selected files may be unranked or ranked low.")
+            return lines.joined(separator: "\n")
+        }
+
         static let budgetPerBatch: Duration = .seconds(3)
         static let filesPerBatch = 40
         static let maxBatches = 2

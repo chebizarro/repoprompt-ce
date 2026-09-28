@@ -2759,11 +2759,13 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                 do {
                     mcpPreparedMessage = try await buildAgentMessage(
                         for: session,
-                        runID: runID,
+                        record: record,
                         workspaceContext: record.workspaceContext,
                         mcpConfiguration: record.mcpConfiguration,
                         agentKind: record.agentKind
                     )
+                } catch is CancellationError {
+                    return .cancelled
                 } catch {
                     return .failed(error.localizedDescription)
                 }
@@ -2875,7 +2877,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                     debugLog("Building agent message")
                     message = try await buildAgentMessage(
                         for: session,
-                        runID: runID,
+                        record: record,
                         workspaceContext: record.workspaceContext,
                         mcpConfiguration: record.mcpConfiguration,
                         agentKind: record.agentKind
@@ -3940,7 +3942,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
 
     private func buildAgentMessage(
         for session: TabSession,
-        runID: UUID,
+        record: ContextBuilderRunRecord,
         workspaceContext: ContextBuilderWorkspaceContext?,
         mcpConfiguration: ContextBuilderMCPRunConfiguration? = nil,
         agentKind: AgentProviderKind? = nil
@@ -3967,8 +3969,9 @@ final class ContextBuilderAgentViewModel: ObservableObject {
             questionTimeoutSeconds: runBehavior.questionTimeoutSeconds
         )
         debugLog("System prompt includes ask_user: \(systemPrompt.contains("ask_user"))")
-        let userMessage = await buildAgentUserMessage(
+        let userMessage = try await buildAgentUserMessage(
             for: session,
+            record: record,
             adjustedBudget: adjustedBudget,
             lookupContext: workspaceContext?.lookupContext
                 ?? mcpConfiguration?.nestedTabContext.frozenLookupContext
@@ -3978,42 +3981,33 @@ final class ContextBuilderAgentViewModel: ObservableObject {
 
     private func buildAgentUserMessage(
         for session: TabSession,
+        record: ContextBuilderRunRecord,
         adjustedBudget: Int,
         lookupContext: WorkspaceLookupContext?
-    ) async -> String {
-        // Context builder prompt IDs captured at run start from viewmodel (always set by captureRunStartState)
+    ) async throws -> String {
         let contextBuilderPromptIDs = session.runStartContextBuilderPromptIDs ?? []
-
-        // PRIORITY 1: Use run-start captured state (prevents tab bleed)
-        if let promptText = session.runStartPromptText,
-           let selection = session.runStartSelection
+        let captured: ContextBuilderCandidatePrePass.Input? = if let prompt = session.runStartPromptText,
+                                                                 let selection = session.runStartSelection
         {
-            let fileTree = await buildFileTree(from: selection, lookupContext: lookupContext)
-            debugLog("Using run-start captured state for tab=\(session.tabID)")
-            return makeUserMessage(
-                fileTree: fileTree,
-                userPrompt: promptText,
-                discoverInstructions: session.contextBuilderInstructions,
-                adjustedBudget: adjustedBudget,
-                contextBuilderPromptIDs: contextBuilderPromptIDs
+            .init(prompt: prompt, selection: selection)
+        } else {
+            nil
+        }
+        let snapshot = captured == nil ? snapshotForTab(session.tabID) : nil
+        let snapshotInput = snapshot.map {
+            ContextBuilderCandidatePrePass.Input(prompt: $0.promptText, selection: $0.selection)
+        }
+        if let input = ContextBuilderCandidatePrePass.preferredInput(
+            captured: captured, snapshot: snapshotInput, live: nil
+        ) {
+            debugLog("Using \(captured == nil ? "workspace snapshot" : "run-start captured") state for tab=\(session.tabID)")
+            return try await makeSelectedUserMessage(
+                input: input, session: session, record: record, adjustedBudget: adjustedBudget,
+                contextBuilderPromptIDs: contextBuilderPromptIDs, lookupContext: lookupContext
             )
         }
 
-        // PRIORITY 2: Workspace snapshot (fallback, may be slightly stale)
-        if let snapshot = snapshotForTab(session.tabID) {
-            let fileTree = await buildFileTree(from: snapshot.selection, lookupContext: lookupContext)
-            debugLog("Using workspace snapshot for tab=\(session.tabID)")
-            return makeUserMessage(
-                fileTree: fileTree,
-                userPrompt: snapshot.promptText,
-                discoverInstructions: session.contextBuilderInstructions,
-                adjustedBudget: adjustedBudget,
-                contextBuilderPromptIDs: contextBuilderPromptIDs
-            )
-        }
-
-        // PRIORITY 3: Live UI state ONLY if still on correct tab
-        // If the tab is no longer active and we have no captured state, something went wrong.
+        // Live UI state is valid only while this tab remains active.
         guard session.tabID == currentTabID else {
             debugLog("ERROR: Tab context unavailable - tab switched before state was captured")
             return makeUserMessage(
@@ -4024,14 +4018,56 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                 contextBuilderPromptIDs: contextBuilderPromptIDs
             )
         }
-
         debugLog("Using live UI state (tab still active) for tab=\(session.tabID)")
         workspaceManager?.publishActiveComposeTabSnapshot(commitToMemory: true)
-        let liveSelection = snapshotForTab(session.tabID)?.selection ?? StoredSelection()
-        let fileTree = await buildFileTree(from: liveSelection, lookupContext: lookupContext)
+        let live = ContextBuilderCandidatePrePass.Input(
+            prompt: promptManager.promptText,
+            selection: snapshotForTab(session.tabID)?.selection ?? StoredSelection()
+        )
+        return try await makeSelectedUserMessage(
+            input: live, session: session, record: record, adjustedBudget: adjustedBudget,
+            contextBuilderPromptIDs: contextBuilderPromptIDs, lookupContext: lookupContext
+        )
+    }
+
+    private func makeSelectedUserMessage(
+        input: ContextBuilderCandidatePrePass.Input,
+        session: TabSession,
+        record: ContextBuilderRunRecord,
+        adjustedBudget: Int,
+        contextBuilderPromptIDs: Set<UUID>,
+        lookupContext: WorkspaceLookupContext?
+    ) async throws -> String {
+        try Task.checkCancellation()
+        guard acceptsEvents(from: record) else { throw CancellationError() }
+        let fileTree = await buildFileTree(from: input.selection, lookupContext: lookupContext)
+        try Task.checkCancellation()
+        guard acceptsEvents(from: record) else { throw CancellationError() }
+
+        let workspaceID = record.workspaceContext?.frozenTabContext.workspaceID
+            ?? record.mcpConfiguration?.nestedTabContext.workspaceID
+            ?? workspaceID(containing: record.tabID)
+        let enabled = workspaceID.map { GlobalSettingsStore.shared.contentJudgmentsEnabled(workspaceID: $0) } ?? false
+        var relevantFilesSection: String?
+        if enabled, let judge = WindowStatesManager.shared.modelRouterRuntime.contentJudgments {
+            let candidates = await ContextBuilderCandidatePrePass.candidates(
+                selection: input.selection,
+                store: promptManager.workspaceFileContextStore,
+                lookupContext: lookupContext
+            )
+            try Task.checkCancellation()
+            guard acceptsEvents(from: record) else { throw CancellationError() }
+            relevantFilesSection = try await ContextBuilderCandidatePrePass.section(
+                task: input.prompt, candidates: candidates, enabled: enabled, judge: judge,
+                isCurrent: { self.acceptsEvents(from: record) }
+            )
+        }
+        try Task.checkCancellation()
+        guard acceptsEvents(from: record) else { throw CancellationError() }
         return makeUserMessage(
             fileTree: fileTree,
-            userPrompt: promptManager.promptText,
+            relevantFilesSection: relevantFilesSection,
+            userPrompt: input.prompt,
             discoverInstructions: session.contextBuilderInstructions,
             adjustedBudget: adjustedBudget,
             contextBuilderPromptIDs: contextBuilderPromptIDs
@@ -4040,6 +4076,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
 
     private func makeUserMessage(
         fileTree: String,
+        relevantFilesSection: String? = nil,
         userPrompt: String,
         discoverInstructions: String,
         adjustedBudget: Int,
@@ -4055,6 +4092,8 @@ final class ContextBuilderAgentViewModel: ObservableObject {
 
             """
         }
+
+        message += ContextBuilderCandidatePrePass.sectionBlock(relevantFilesSection)
 
         // Always include current prompt content if not empty - the system prompt controls what the agent does with it
         // (augment mode: preserve verbatim, preserve mode: don't touch, fullRewrite mode: rewrite completely)
