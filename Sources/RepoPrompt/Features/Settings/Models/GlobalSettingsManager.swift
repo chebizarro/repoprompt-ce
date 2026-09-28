@@ -352,6 +352,7 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
     @Published private(set) var copySettings: [UUID: CopyGlobalSettings] = [:]
     @Published private(set) var chatSettings: [UUID: ChatGlobalSettings] = [:]
     @Published private(set) var agentModelsSettingsByWorkspaceID: [UUID: WorkspaceAgentModelsSettings] = [:]
+    @Published private(set) var contentJudgmentsByWorkspaceID: [UUID: WorkspaceContentJudgmentsSettings] = [:]
     @Published private(set) var codeMapsGloballyDisabled: Bool = false
     @Published private(set) var modelRouterSettingsRevision: UInt64 = 0
     /// Non-nil when the on-disk settings file is blocked (unreadable or a newer schema).
@@ -1433,6 +1434,31 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
         }
     }
 
+    /// Per-workspace Jev content-judgments opt-in. A missing workspace ID, map, or entry
+    /// resolves off; there is no global default.
+    func contentJudgmentsEnabled(workspaceID: UUID?) -> Bool {
+        guard let workspaceID else { return false }
+        return contentJudgmentsByWorkspaceID[workspaceID]?.enabled == true
+    }
+
+    /// Disabling removes the entry so a document without any opt-ins returns to its
+    /// pre-v11 shape instead of materializing `enabled: false` records.
+    func setContentJudgments(enabled: Bool, workspaceID: UUID) {
+        guard contentJudgmentsEnabled(workspaceID: workspaceID) != enabled
+            || (!enabled && contentJudgmentsByWorkspaceID[workspaceID] != nil)
+        else { return }
+        if enabled {
+            contentJudgmentsByWorkspaceID[workspaceID] = WorkspaceContentJudgmentsSettings(enabled: true)
+        } else {
+            contentJudgmentsByWorkspaceID.removeValue(forKey: workspaceID)
+        }
+        save()
+    }
+
+    func hasAnyContentJudgmentsEnabled() -> Bool {
+        contentJudgmentsByWorkspaceID.values.contains { $0.enabled }
+    }
+
     func codexMemoriesEnabled() -> Bool {
         CodexMemories.isEnabled(persistedValue: scalarPreferences.agentMode?.codexMemoriesEnabled)
     }
@@ -1744,6 +1770,26 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
                 defaults.removeObject(forKey: "claudeRawEventLogFilePath")
             } else {
                 defaults.set(path, forKey: "claudeRawEventLogFilePath")
+            }
+        }
+
+        func jevContentJudgmentDiagnosticsEnabled() -> Bool {
+            defaults.bool(forKey: "jevContentJudgmentDiagnosticsEnabled")
+        }
+
+        func setJevContentJudgmentDiagnosticsEnabled(_ enabled: Bool) {
+            defaults.set(enabled, forKey: "jevContentJudgmentDiagnosticsEnabled")
+        }
+
+        func jevContentJudgmentLogFilePath() -> String {
+            defaults.string(forKey: "jevContentJudgmentLogFilePath") ?? ""
+        }
+
+        func setJevContentJudgmentLogFilePath(_ path: String) {
+            if path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                defaults.removeObject(forKey: "jevContentJudgmentLogFilePath")
+            } else {
+                defaults.set(path, forKey: "jevContentJudgmentLogFilePath")
             }
         }
 
@@ -2670,6 +2716,7 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
         )
         chatSettings = migratedContextBuilderState.chatSettings
         agentModelsSettingsByWorkspaceID = document.agentModelsSettings
+        contentJudgmentsByWorkspaceID = document.contentJudgmentsSettings
         globalDefaults = migratedContextBuilderState.globalDefaults
         scalarPreferences = migratedContextBuilderState.scalarPreferences
         let seededFileSystemDefaults = Self.seedFileSystemGlobalIgnoreDefaults(in: &scalarPreferences)
@@ -2772,6 +2819,7 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
             )
             chatSettings = migratedContextBuilderState.chatSettings
             agentModelsSettingsByWorkspaceID = document.agentModelsSettings
+            contentJudgmentsByWorkspaceID = document.contentJudgmentsSettings
             globalDefaults = migratedContextBuilderState.globalDefaults
             scalarPreferences = migratedContextBuilderState.scalarPreferences
             let seededFileSystemDefaults = Self.seedFileSystemGlobalIgnoreDefaults(in: &scalarPreferences)
@@ -3094,6 +3142,7 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
             copySettings: copySettings,
             chatSettings: chatSettings,
             agentModelsSettings: agentModelsSettingsByWorkspaceID,
+            contentJudgmentsSettings: contentJudgmentsByWorkspaceID,
             globalDefaults: globalDefaults,
             scalarPreferences: scalarPreferences
         )

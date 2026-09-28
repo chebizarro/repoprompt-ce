@@ -22,13 +22,23 @@ enum AutoSliceSelection {
         guard reply.totalLines > 0 else { return nil }
         guard reply.firstLine > 0 else { return nil }
         guard reply.lastLine >= reply.firstLine else { return nil }
-        guard reply.firstLine <= reply.totalLines else { return nil }
+        guard reply.firstLine <= reply.totalLines, reply.lastLine <= reply.totalLines else { return nil }
 
         let displayPath = reply.displayPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let fallback = fallbackPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let resolvedPath = displayPath.isEmpty ? fallback : displayPath
         guard !resolvedPath.isEmpty else { return nil }
         guard !isAgentsInstructionsFile(resolvedPath) else { return nil }
+
+        if let lineRanges = reply.lineRanges {
+            guard !lineRanges.isEmpty,
+                  lineRanges.allSatisfy({ $0.start > 0 && $0.end >= $0.start && $0.end <= reply.totalLines })
+            else { return nil }
+            return .slice(SliceEntry(
+                path: resolvedPath,
+                ranges: lineRanges.map { LineRange(start: $0.start, end: $0.end) }
+            ))
+        }
 
         if reply.firstLine == 1, reply.lastLine == reply.totalLines {
             return .full(path: resolvedPath)

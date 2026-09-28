@@ -11,7 +11,8 @@ enum GlobalSettingsJSONPreservation {
     private static let uuidKeyedMapKeys: Set<String> = [
         "copySettingsByWorkspaceID",
         "chatSettingsByWorkspaceID",
-        "agentModelsSettingsByWorkspaceID"
+        "agentModelsSettingsByWorkspaceID",
+        "contentJudgmentsByWorkspaceID"
     ]
 
     private struct CanonicalizedUUIDMap {

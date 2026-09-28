@@ -335,6 +335,7 @@ final class GlobalSettingsFileStore: GlobalSettingsFileStoring {
             copySettings: importedDocument.copySettings,
             chatSettings: importedDocument.chatSettings,
             agentModelsSettings: importedDocument.agentModelsSettings,
+            contentJudgmentsSettings: importedDocument.contentJudgmentsSettings,
             globalDefaults: importedDocument.globalDefaults,
             scalarPreferences: importedDocument.scalarPreferences
         )
@@ -699,6 +700,7 @@ final class GlobalSettingsFileStore: GlobalSettingsFileStoring {
         "copySettingsByWorkspaceID",
         "chatSettingsByWorkspaceID",
         "agentModelsSettingsByWorkspaceID",
+        "contentJudgmentsByWorkspaceID",
         "globalDefaults",
         "scalarPreferences"
     ]

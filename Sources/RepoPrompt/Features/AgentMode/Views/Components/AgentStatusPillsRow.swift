@@ -57,6 +57,13 @@ struct AgentStatusPillsRow: View {
                     onToggle: { agentModeVM.toggleAutoEffort() }
                 )
 
+                AgentContentJudgmentsPill(
+                    props: snapshot.contentJudgments,
+                    onToggle: { agentModeVM.toggleContentJudgments() },
+                    onConfirmEnable: { agentModeVM.confirmContentJudgmentsEnable(workspaceID: $0) },
+                    onCancelEnable: { agentModeVM.cancelContentJudgmentsEnable() }
+                )
+
                 if let stagedSlashCommand = snapshot.stagedSlashCommand {
                     AgentStagedSlashCommandPill(staged: stagedSlashCommand)
                 }

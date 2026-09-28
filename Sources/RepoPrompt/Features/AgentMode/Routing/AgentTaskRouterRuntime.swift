@@ -5,6 +5,8 @@ import Foundation
 final class AgentTaskRouterRuntime: ObservableObject {
     let registry: AgentTaskRouterRegistry
     let coordinator: AgentFreshTaskRoutingCoordinator
+    /// App-global content-judgment service; `nil` only for tests that compose a bare registry.
+    let contentJudgments: (any JevContentJudging)?
     let objectWillChange = ObservableObjectPublisher()
 
     private let readinessLock = NSLock()
@@ -12,11 +14,13 @@ final class AgentTaskRouterRuntime: ObservableObject {
 
     init(
         registrations: [AgentTaskRouterBackendRegistration],
-        bootstrapBackendID: AgentTaskRouterBackendID? = nil
+        bootstrapBackendID: AgentTaskRouterBackendID? = nil,
+        contentJudgments: (any JevContentJudging)? = nil
     ) throws {
         let registry = try AgentTaskRouterRegistry(registrations: registrations)
         self.registry = registry
         coordinator = AgentFreshTaskRoutingCoordinator(registry: registry)
+        self.contentJudgments = contentJudgments
         start(bootstrapBackendID: bootstrapBackendID)
     }
 
@@ -35,12 +39,27 @@ final class AgentTaskRouterRuntime: ObservableObject {
                         settings: JevTaskRouterBackend.settingsRegistration(controller: credentials)
                     )
                 ],
-                bootstrapBackendID: GlobalSettingsStore.shared.autoEffortEnabled() ? .jev
-                    : (configuration.enabled ? configuration.selectedBackendID : nil)
+                bootstrapBackendID: Self.bootstrapBackendID(
+                    routerEnabled: configuration.enabled,
+                    selectedBackendID: configuration.selectedBackendID,
+                    autoEffortEnabled: GlobalSettingsStore.shared.autoEffortEnabled(),
+                    hasAnyContentJudgmentsEnabled: GlobalSettingsStore.shared.hasAnyContentJudgmentsEnabled()
+                ),
+                contentJudgments: JevContentJudgmentService(credentials: credentials)
             )
         } catch {
             preconditionFailure("Invalid bundled model-router registry: \(error)")
         }
+    }
+
+    static func bootstrapBackendID(
+        routerEnabled: Bool,
+        selectedBackendID: AgentTaskRouterBackendID?,
+        autoEffortEnabled: Bool,
+        hasAnyContentJudgmentsEnabled: Bool
+    ) -> AgentTaskRouterBackendID? {
+        if autoEffortEnabled || hasAnyContentJudgmentsEnabled { return .jev }
+        return routerEnabled ? selectedBackendID : nil
     }
 
     func isBackendReady(_ id: AgentTaskRouterBackendID) -> Bool {
