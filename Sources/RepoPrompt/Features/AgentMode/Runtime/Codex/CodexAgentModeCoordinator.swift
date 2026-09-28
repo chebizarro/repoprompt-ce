@@ -8625,6 +8625,16 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             clearCodexPendingAuthRetryTurn(session)
             sealAssistantBoundary(session)
             session.pendingApproval = request
+            Task { @MainActor in
+                await AgentApprovalAdvisorySupport.enrichWithIrreversibilityHint(
+                    session: session,
+                    request: request,
+                    service: WindowStatesManager.shared.modelRouterRuntime.contentJudgments,
+                    onEnriched: { [weak self] in
+                        self?.viewModel?.requestUIRefresh(tabID: session.tabID, urgent: true)
+                    }
+                )
+            }
             viewModel?.reconcileInteractiveRunState(session)
             viewModel?.requestUIRefresh(tabID: session.tabID, urgent: true)
             viewModel?.publishMCPStateChange(for: session)

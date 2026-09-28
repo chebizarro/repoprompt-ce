@@ -295,6 +295,14 @@ final class ClaudeIntegratedAgentModeRunner {
                     session.recordRunProgress(ownership: ownership, kind: .interaction, stage: .waitingForInteraction)
                 }
                 session.pendingApproval = request
+                Task { @MainActor in
+                    await AgentApprovalAdvisorySupport.enrichWithIrreversibilityHint(
+                        session: session,
+                        request: request,
+                        service: WindowStatesManager.shared.modelRouterRuntime.contentJudgments,
+                        onEnriched: { hooks.bindingObservation.updateBindings(session) }
+                    )
+                }
                 session.clearClaudeReasoningStatus(clearDisplayedStatus: true)
                 session.setRunningStatus(nil, source: nil)
                 session.runState = .waitingForApproval

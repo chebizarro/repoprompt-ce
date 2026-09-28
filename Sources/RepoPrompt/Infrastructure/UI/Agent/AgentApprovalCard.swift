@@ -35,8 +35,18 @@ struct AgentApprovalCard: View {
                 .font(.title2)
                 .foregroundColor(.orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text(request.title)
-                    .font(.headline)
+                HStack(spacing: 8) {
+                    Text(request.title)
+                        .font(.headline)
+                    if request.irreversibilityHint != nil {
+                        Text("Possibly irreversible")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(.orange)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.orange.opacity(0.12), in: Capsule())
+                    }
+                }
                 Text("Needs your approval")
                     .font(.caption)
                     .foregroundColor(.secondary)

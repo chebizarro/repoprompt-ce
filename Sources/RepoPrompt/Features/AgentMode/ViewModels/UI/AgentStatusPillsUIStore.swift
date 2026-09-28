@@ -48,6 +48,7 @@ struct AgentContentJudgmentsPillProps: Equatable {
 struct AgentStatusPillsSnapshot: Equatable {
     let currentTabID: UUID?
     let selectedWorkflow: AgentWorkflowDefinition?
+    let suggestedSkill: AgentSkillDefinition?
     let stagedSlashCommand: AgentStagedSlashCommandProps?
     let selectedAgent: AgentProviderKind
     let autoEditPermissionGuidance: AgentModeViewModel.AutoEditPermissionGuidance?
@@ -69,6 +70,7 @@ struct AgentStatusPillsSnapshot: Equatable {
     static let empty = AgentStatusPillsSnapshot(
         currentTabID: nil,
         selectedWorkflow: nil,
+        suggestedSkill: nil,
         stagedSlashCommand: nil,
         selectedAgent: .claudeCode,
         autoEditPermissionGuidance: nil,

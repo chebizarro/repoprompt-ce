@@ -942,6 +942,10 @@ struct AgentPermissionsRequest: Identifiable, Hashable {
     }
 }
 
+enum AgentApprovalIrreversibilityHint: Hashable {
+    case possiblyIrreversible(jevProbability: Double)
+}
+
 struct AgentApprovalRequest: Identifiable, Hashable {
     let id: UUID
     let requestID: AgentApprovalRequestID
@@ -956,6 +960,7 @@ struct AgentApprovalRequest: Identifiable, Hashable {
     let grantRoot: String?
     let proposedExecpolicyAmendmentJSON: String?
     let details: [AgentApprovalDetail]
+    let irreversibilityHint: AgentApprovalIrreversibilityHint?
 
     init(
         id: UUID? = nil,
@@ -970,7 +975,8 @@ struct AgentApprovalRequest: Identifiable, Hashable {
         cwd: String? = nil,
         grantRoot: String? = nil,
         proposedExecpolicyAmendmentJSON: String? = nil,
-        details: [AgentApprovalDetail] = []
+        details: [AgentApprovalDetail] = [],
+        irreversibilityHint: AgentApprovalIrreversibilityHint? = nil
     ) {
         self.id = id ?? Self.stableID(
             requestID: requestID,
@@ -992,6 +998,26 @@ struct AgentApprovalRequest: Identifiable, Hashable {
         self.grantRoot = grantRoot
         self.proposedExecpolicyAmendmentJSON = proposedExecpolicyAmendmentJSON
         self.details = details
+        self.irreversibilityHint = irreversibilityHint
+    }
+
+    func withIrreversibilityHint(_ hint: AgentApprovalIrreversibilityHint) -> Self {
+        Self(
+            id: id,
+            requestID: requestID,
+            method: method,
+            kind: kind,
+            threadID: threadID,
+            turnID: turnID,
+            itemID: itemID,
+            reason: reason,
+            command: command,
+            cwd: cwd,
+            grantRoot: grantRoot,
+            proposedExecpolicyAmendmentJSON: proposedExecpolicyAmendmentJSON,
+            details: details,
+            irreversibilityHint: hint
+        )
     }
 
     static func stableID(

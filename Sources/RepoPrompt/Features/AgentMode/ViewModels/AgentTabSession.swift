@@ -756,6 +756,7 @@ final class AgentTabSession: ObservableObject {
     var attachmentTurnState: AgentModeViewModel.AttachmentTurnState = .idle
 
     // Provider session ID for resumption (e.g., Claude CLI session_id)
+    var workspaceID: UUID?
     var providerSessionID: String?
     var providerCleanupHandle: ProviderConversationCleanupHandle?
     var providerTokenUsageByTurn: [AgentTokenUsagePersist] = []
@@ -773,6 +774,23 @@ final class AgentTabSession: ObservableObject {
     func appendAutomationAudit(_ record: AgentAutomationTurnAudit) {
         automationTurnAudit.append(record)
         automationTurnAudit = AgentAutomationTurnAudit.retain(automationTurnAudit)
+        isDirty = true
+    }
+
+    var contentJudgmentAudit: [AgentContentJudgmentAudit] = []
+
+    func appendContentJudgmentAudit(_ record: AgentContentJudgmentAudit) {
+        contentJudgmentAudit.append(record)
+        contentJudgmentAudit = AgentContentJudgmentAudit.retain(contentJudgmentAudit)
+        isDirty = true
+    }
+
+    func updateContentJudgmentAudit(
+        id: UUID,
+        _ update: (inout AgentContentJudgmentAudit) -> Void
+    ) {
+        guard let index = contentJudgmentAudit.lastIndex(where: { $0.id == id }) else { return }
+        update(&contentJudgmentAudit[index])
         isDirty = true
     }
 

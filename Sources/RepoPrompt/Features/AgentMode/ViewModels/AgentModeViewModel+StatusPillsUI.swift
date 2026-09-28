@@ -5,6 +5,7 @@ extension AgentModeViewModel {
         AgentStatusPillsSnapshot(
             currentTabID: currentTabID,
             selectedWorkflow: selectedWorkflow,
+            suggestedSkill: suggestedSkillTabID == currentTabID ? suggestedSkill : nil,
             stagedSlashCommand: stagedSlashCommandProps(tabID: currentTabID),
             selectedAgent: selectedAgent,
             autoEditPermissionGuidance: autoEditPermissionGuidance,

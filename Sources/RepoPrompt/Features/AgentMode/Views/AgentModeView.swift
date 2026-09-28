@@ -2480,7 +2480,7 @@ struct AgentModeChatDetailView: View {
                     agentModeVM.submitApprovalDecision(tabID: tabID, requestID: approval.id, decision: decision)
                 }
             )
-            .id("pendingApproval")
+            .id(approval.id)
             .transition(.opacity)
         } else if let request = runInteractionSnapshot.pendingMCPElicitationRequest {
             AgentMCPElicitationCard(

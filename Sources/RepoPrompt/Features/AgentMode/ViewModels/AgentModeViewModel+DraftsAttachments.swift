@@ -116,6 +116,7 @@ extension AgentModeViewModel {
                 tabDraftText[tabID] = text
             }
         }
+        scheduleSkillSuggestion(for: tabID, text: text)
         let nextStagedSlashCommand = stagedSlashCommandProps(tabID: tabID)
         if tabID == currentTabID, previousStagedSlashCommand != nextStagedSlashCommand {
             syncComposerUIState(tabID: tabID)
