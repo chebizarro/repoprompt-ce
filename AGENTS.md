@@ -303,3 +303,9 @@ See [`docs/testing.md`](docs/testing.md) for the contributor workflow, test-qual
 ```bash
 make clean    # removes .build
 ```
+
+## Git Worktree & Branch Hygiene
+
+- Once a feature branch's changes are merged into `main`/`master`, remove the worktree and delete the branch. Don't leave merged worktrees or stale branches lying around.
+- Before removing a worktree, run `git status` inside it to confirm there's nothing uncommitted you'd lose — commit, stash, or discard first.
+- Clean up with `git worktree remove <path>` and `git branch -d <branch>` (add `git push origin --delete <branch>` if the branch was pushed).
