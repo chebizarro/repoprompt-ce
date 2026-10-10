@@ -9,7 +9,7 @@ struct ReadFileResultCard: View {
         ToolJSON.decode(ToolResultDTOs.ReadFileReply.self, from: item.toolResultJSON)
     }
 
-    /// Compact 1-line summary: "filename.swift • Lines 1-50 of 200"
+    /// Compact 1-line summary: "filename.swift • Lines 1-50, 88-101 of 200"
     private var summary: String {
         if let summary = StoredToolCardPresentation.fromSummaryOnly(raw: item.toolResultJSON)?.inlineSubtitle {
             return summary
@@ -23,6 +23,10 @@ struct ReadFileResultCard: View {
         let path = dto?.displayPath ?? args?.path ?? "file"
         let name = fileName(from: path)
         if let dto {
+            if let ranges = dto.lineRanges, !ranges.isEmpty {
+                let summary = ranges.map { "\($0.start)-\($0.end)" }.joined(separator: ", ")
+                return "\(name) • Lines \(summary) of \(dto.totalLines)"
+            }
             return "\(name) • Lines \(dto.firstLine)-\(dto.lastLine) of \(dto.totalLines)"
         }
         return name

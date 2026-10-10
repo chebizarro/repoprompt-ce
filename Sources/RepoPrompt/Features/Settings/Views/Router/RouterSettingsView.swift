@@ -14,6 +14,7 @@ struct RouterSettingsView: View {
                 header
                 statusCard
                 autoEffortCard
+                contentJudgmentsCard
                 backendCard
                 routingPolicyCard
                 candidatesCard
@@ -110,6 +111,32 @@ struct RouterSettingsView: View {
                 .foregroundStyle(.secondary)
             Link("TypeSafe privacy policy", destination: URL(string: "https://typesafe.ai/legal/privacy-policy")!)
                 .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
+        }
+    }
+
+    private var contentJudgmentsCard: some View {
+        card {
+            Label("Content Judgments", systemImage: "scale.3d").font(.headline)
+            Text("Let Jev score search results and file text for relevance so agents read less. Content judgments are enabled per workspace from the scale pill (\(Image(systemName: "scale.3d"))) in the Agent Mode composer; each window toggles its active workspace.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(contentJudgmentsCountText)
+                .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
+                .foregroundStyle(.secondary)
+            Text("When enabled for a workspace, search/read relevance text is sent to TypeSafe (Jev) for ranking. See docs/architecture/jev-content-judgments.md.")
+                .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Link("TypeSafe privacy policy", destination: URL(string: "https://typesafe.ai/legal/privacy-policy")!)
+                .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
+        }
+    }
+
+    private var contentJudgmentsCountText: String {
+        switch viewModel.contentJudgmentsEnabledWorkspaceCount {
+        case 0: "Not enabled for any workspace."
+        case 1: "Enabled for 1 workspace."
+        case let count: "Enabled for \(count) workspaces."
         }
     }
 

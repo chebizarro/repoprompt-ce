@@ -45,6 +45,9 @@ representing its content. Schema-requiring features have fixed introduction cons
 - `agentModelParameterPinsSchemaVersion = 8`
 - `modelRouterSchemaVersion = 9`
 - `scopedModelRouterSchemaVersion = 10`
+- `contentJudgmentsSchemaVersion = 11`
+
+The optional `contentJudgmentsByWorkspaceID` map requires schema v11 only when nonempty. An absent map or absent workspace entry means content judgments are off; there is no global default or inheritance mode. Existing v10 documents without the map retain their content-derived schema version. The [content-judgments contract](jev-content-judgments.md) specifies the per-workspace TypeSafe egress gate and its absent-means-off behavior.
 
 `requiredSchemaVersion` returns the maximum fixed feature version required by the
 document. It must never use `currentSchemaVersion` as the version of an existing feature.

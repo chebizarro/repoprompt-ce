@@ -173,6 +173,20 @@ final class RouterSettingsViewModelTests: XCTestCase {
         )
     }
 
+    func testContentJudgmentsCardCountsEnabledWorkspacesReadOnly() throws {
+        let fixture = try makeFixture()
+        XCTAssertEqual(fixture.viewModel.contentJudgmentsEnabledWorkspaceCount, 0)
+
+        let first = UUID()
+        let second = UUID()
+        fixture.store.setContentJudgments(enabled: true, workspaceID: first)
+        fixture.store.setContentJudgments(enabled: true, workspaceID: second)
+        XCTAssertEqual(fixture.viewModel.contentJudgmentsEnabledWorkspaceCount, 2)
+
+        fixture.store.setContentJudgments(enabled: false, workspaceID: first)
+        XCTAssertEqual(fixture.viewModel.contentJudgmentsEnabledWorkspaceCount, 1)
+    }
+
     private struct Fixture {
         let store: GlobalSettingsStore
         let viewModel: RouterSettingsViewModel

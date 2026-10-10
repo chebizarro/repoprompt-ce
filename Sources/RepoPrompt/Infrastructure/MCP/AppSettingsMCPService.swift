@@ -1003,6 +1003,24 @@ private enum AppSettingsMCPRegistry {
                 write: { try $0.setClaudeRawEventLogFilePath(requiredString(from: $1)) }
             ),
             boolSetting(
+                key: "agent_mode.jev_content_judgment_diagnostics_enabled",
+                group: "agent_mode",
+                label: "Jev Content Judgment Diagnostics",
+                description: "DEBUG-only opt-in toggle for the Jev content-judgment JSONL ledger (no file text is recorded). Disabled by default; when enabled without a directory override, records use a non-workspace temp debug directory. Writes UserDefaults key 'jevContentJudgmentDiagnosticsEnabled'.",
+                read: { .bool($0.jevContentJudgmentDiagnosticsEnabled()) },
+                write: { try $0.setJevContentJudgmentDiagnosticsEnabled(requiredBool(from: $1)) }
+            ),
+            rawTextSetting(
+                key: "agent_mode.jev_content_judgment_log_file_path",
+                group: "agent_mode",
+                label: "Jev Content Judgment Log Directory",
+                description: "DEBUG-only directory override for Jev content-judgment JSONL ledger files. Empty string clears the override; enabled diagnostics then write to a non-workspace temp debug directory. Writes UserDefaults key 'jevContentJudgmentLogFilePath'.",
+                maxLength: debugDefaultsStringMaxLength,
+                allowEmpty: true,
+                read: { .string($0.jevContentJudgmentLogFilePath()) },
+                write: { try $0.setJevContentJudgmentLogFilePath(requiredString(from: $1)) }
+            ),
+            boolSetting(
                 key: "agent_mode.perf_diagnostics_enabled",
                 group: "agent_mode",
                 label: "Agent Mode Perf Diagnostics",

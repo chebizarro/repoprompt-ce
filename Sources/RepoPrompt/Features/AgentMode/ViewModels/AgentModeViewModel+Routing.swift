@@ -63,6 +63,62 @@ extension AgentModeViewModel {
         syncStatusPillsUIState()
     }
 
+    /// The only scope the content-judgments pill reads or writes: this window's active workspace.
+    var contentJudgmentsWorkspace: (id: UUID, name: String)? {
+        #if DEBUG
+            if let test_contentJudgmentsWorkspaceOverride {
+                return test_contentJudgmentsWorkspaceOverride
+            }
+        #endif
+        guard let workspace = workspaceManager?.activeWorkspace else { return nil }
+        return (workspace.id, workspace.name)
+    }
+
+    func contentJudgmentsPillProps() -> AgentContentJudgmentsPillProps {
+        guard let workspace = contentJudgmentsWorkspace else { return .noWorkspace }
+        return AgentContentJudgmentsPillProps(
+            workspaceID: workspace.id,
+            workspaceName: workspace.name,
+            isOn: modelRouterSettingsStore.contentJudgmentsEnabled(workspaceID: workspace.id),
+            isAvailable: modelRouterRuntime?.isBackendReady(.jev) == true,
+            isAwaitingEnableConfirmation: pendingContentJudgmentsEnableWorkspaceID == workspace.id
+        )
+    }
+
+    /// On → off applies immediately. Off → on only stages the egress confirmation; nothing is
+    /// persisted until `confirmContentJudgmentsEnable(workspaceID:)`. Like Auto effort, enabling
+    /// requires a validated Jev key.
+    func toggleContentJudgments() {
+        guard let workspaceID = contentJudgmentsWorkspace?.id else { return }
+        if modelRouterSettingsStore.contentJudgmentsEnabled(workspaceID: workspaceID) {
+            pendingContentJudgmentsEnableWorkspaceID = nil
+            modelRouterSettingsStore.setContentJudgments(enabled: false, workspaceID: workspaceID)
+        } else {
+            guard modelRouterRuntime?.isBackendReady(.jev) == true else { return }
+            pendingContentJudgmentsEnableWorkspaceID = workspaceID
+        }
+        syncStatusPillsUIState()
+    }
+
+    /// Takes the workspace the dialog was shown for rather than reading the pending slot, because
+    /// SwiftUI may dismiss (and cancel) the dialog before running the confirm action. A window that
+    /// switched workspaces in the meantime enables nothing.
+    func confirmContentJudgmentsEnable(workspaceID: UUID) {
+        pendingContentJudgmentsEnableWorkspaceID = nil
+        if workspaceID == contentJudgmentsWorkspace?.id,
+           modelRouterRuntime?.isBackendReady(.jev) == true
+        {
+            modelRouterSettingsStore.setContentJudgments(enabled: true, workspaceID: workspaceID)
+        }
+        syncStatusPillsUIState()
+    }
+
+    func cancelContentJudgmentsEnable() {
+        guard pendingContentJudgmentsEnableWorkspaceID != nil else { return }
+        pendingContentJudgmentsEnableWorkspaceID = nil
+        syncStatusPillsUIState()
+    }
+
     func handleModelRouterRuntimeChanged() {
         reconcileModelRouterEnabledState()
     }

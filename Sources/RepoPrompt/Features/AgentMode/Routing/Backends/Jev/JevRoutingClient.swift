@@ -17,11 +17,40 @@ struct JevModelList: Decodable, Equatable {
     let models: [Model]
 }
 
+/// The documented `criteria` value of one `/v1/systemone` question.
+///
+/// `choice` options and the `noul` `{true, false}` pair are a JSON object; `score` levels are an
+/// ordered JSON array whose index is the level. `.labeled` encodes exactly as the former
+/// `[String: String]` property did, so routing request bytes are unchanged.
+enum JevWireCriteria: Encodable, Equatable, ExpressibleByDictionaryLiteral {
+    case labeled([String: String])
+    case levels([String])
+
+    init(dictionaryLiteral elements: (String, String)...) {
+        self = .labeled(Dictionary(uniqueKeysWithValues: elements))
+    }
+
+    /// Submitted option keys (`choice` keys or `true`/`false`); empty for `score` levels.
+    var keys: [String] {
+        guard case let .labeled(options) = self else { return [] }
+        return Array(options.keys)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .labeled(options): try container.encode(options)
+        case let .levels(levels): try container.encode(levels)
+        }
+    }
+}
+
 struct JevRoutingWireRequest: Encodable, Equatable {
     struct Question: Encodable, Equatable {
+        /// `choice`, `noul`, or `score`. Routing only ever submits `choice`.
         let type: String
         let instructions: String
-        let criteria: [String: String]
+        let criteria: JevWireCriteria
     }
 
     let model: String
@@ -30,11 +59,36 @@ struct JevRoutingWireRequest: Encodable, Equatable {
 }
 
 struct JevRoutingWireResponse: Decodable, Equatable {
+    /// One answer of any documented question type. Every field beyond `type` is optional so a
+    /// `noul` or `score` answer decodes; routing validation still requires the choice fields.
     struct Answer: Decodable, Equatable {
         let type: String
-        let choice: String
-        let probabilities: [String: Double]
-        let confidence: Double
+        let choice: String?
+        let probabilities: [String: Double]?
+        let confidence: Double?
+        /// `noul` probability in 0...1.
+        let noul: Double?
+        /// `score` level in `0...(levels - 1)`; documented as probability-weighted, so fractional.
+        let score: Double?
+        let legend: [String]?
+
+        init(
+            type: String,
+            choice: String? = nil,
+            probabilities: [String: Double]? = nil,
+            confidence: Double? = nil,
+            noul: Double? = nil,
+            score: Double? = nil,
+            legend: [String]? = nil
+        ) {
+            self.type = type
+            self.choice = choice
+            self.probabilities = probabilities
+            self.confidence = confidence
+            self.noul = noul
+            self.score = score
+            self.legend = legend
+        }
     }
 
     struct Usage: Decodable, Equatable {

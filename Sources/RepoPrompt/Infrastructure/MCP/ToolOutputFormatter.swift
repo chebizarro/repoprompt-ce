@@ -433,12 +433,18 @@ enum ToolOutputFormatter {
         language: String,
         message: String?,
         content: String,
-        worktreeScope: ToolResultDTOs.WorktreeScopeDTO? = nil
+        worktreeScope: ToolResultDTOs.WorktreeScopeDTO? = nil,
+        lineRanges: [ToolResultDTOs.ReadFileReply.LineRange]? = nil
     ) -> String {
         var out: [String] = []
         out.append("## File Read \(statusIcon(success: true))")
         out.append("- **Path**: `\(path)`")
-        out.append("- **Lines**: \(first)–\(last) of \(total)")
+        if let lineRanges, !lineRanges.isEmpty {
+            let ranges = lineRanges.map { "\($0.start)–\($0.end)" }.joined(separator: ", ")
+            out.append("- **Lines**: \(ranges) of \(total)")
+        } else {
+            out.append("- **Lines**: \(first)–\(last) of \(total)")
+        }
         if let m = message, !m.isEmpty { out.append("- **Note**: \(m)") }
         out.append(contentsOf: worktreeScopeLines(worktreeScope, operation: .readFile))
         out.append("")
@@ -2028,7 +2034,8 @@ extension ToolOutputFormatter {
             language: language,
             message: dto.message,
             content: dto.content,
-            worktreeScope: dto.worktreeScope
+            worktreeScope: dto.worktreeScope,
+            lineRanges: dto.lineRanges
         )
         return [.text(text)]
     }
@@ -2061,6 +2068,13 @@ extension ToolOutputFormatter {
             total = content.components(separatedBy: "\n").count
             last = total
         }
+        let lineRanges: [ToolResultDTOs.ReadFileReply.LineRange]?
+        if let rawRanges = obj["line_ranges"] {
+            guard let decoded = rawRanges.decode([ToolResultDTOs.ReadFileReply.LineRange].self) else { return nil }
+            lineRanges = decoded
+        } else {
+            lineRanges = nil
+        }
         return ToolResultDTOs.ReadFileReply(
             content: content,
             totalLines: total,
@@ -2072,7 +2086,12 @@ extension ToolOutputFormatter {
             errorMessage: obj["error"]?.stringValue,
             errorCode: obj["error_code"]?.stringValue,
             retryable: obj["retryable"]?.boolValue,
-            retryAfterMilliseconds: wholeNumberInt(obj["retry_after_ms"])
+            retryAfterMilliseconds: wholeNumberInt(obj["retry_after_ms"]),
+            lineRanges: lineRanges,
+            relevantTo: obj["relevant_to"]?.stringValue,
+            semanticFilter: obj["semantic_filter"].flatMap {
+                $0.decode(ToolResultDTOs.ReadFileReply.SemanticFilter.self)
+            }
         )
     }
 
@@ -2082,6 +2101,18 @@ extension ToolOutputFormatter {
             return dto.content.isEmpty && dto.firstLine == 0 && dto.lastLine == 0
         }
         guard dto.firstLine > 0, dto.lastLine <= dto.totalLines else { return false }
+        if let ranges = dto.lineRanges {
+            guard let first = ranges.first, let last = ranges.last,
+                  first.start == dto.firstLine, last.end == dto.lastLine
+            else { return false }
+            var previousEnd = 0
+            for range in ranges {
+                guard range.start > previousEnd, range.end >= range.start,
+                      range.end <= dto.totalLines
+                else { return false }
+                previousEnd = range.end
+            }
+        }
         if dto.lastLine >= dto.firstLine { return true }
         // The provider supports limit=0 and start_line beyond EOF without an error.
         return dto.content.isEmpty && dto.lastLine == min(dto.firstLine - 1, dto.totalLines)

@@ -207,6 +207,11 @@ final class RouterSettingsViewModel: ObservableObject {
         objectWillChange.send()
     }
 
+    /// Read-only summary; the per-workspace toggle lives on the composer's content-judgments pill.
+    var contentJudgmentsEnabledWorkspaceCount: Int {
+        settingsStore.contentJudgmentsByWorkspaceID.values.count(where: \.enabled)
+    }
+
     @discardableResult
     func performBackendAction(_ action: AgentTaskRouterBackendSettingsAction) async -> Bool {
         guard !isPerformingBackendOperation,

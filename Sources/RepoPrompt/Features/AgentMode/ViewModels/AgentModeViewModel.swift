@@ -708,6 +708,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     private let sessionLifecycleAuthority = AgentSessionLifecycleAuthority()
     var modelRouterSettingsStore: GlobalSettingsStore = .shared
     var modelRouterRuntime: AgentTaskRouterRuntime?
+    /// Workspace whose content-judgments opt-in is waiting on the egress confirmation dialog.
+    var pendingContentJudgmentsEnableWorkspaceID: UUID?
     struct StagedTaskRoutingResult {
         let candidates: [AgentTaskRoutingCandidateBuilder.Candidate]
         let outcome: AgentTaskRoutingBackendOutcome
@@ -920,6 +922,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     #if DEBUG
         private var test_currentTabIDOverride: UUID?
         private var test_activeWorkspaceIDForSessionIndexOverride: UUID?
+        /// Stands in for `workspaceManager.activeWorkspace` in the content-judgments pill.
+        var test_contentJudgmentsWorkspaceOverride: (id: UUID, name: String)?
         private var test_allowsScheduledDerivedTranscriptRefreshWithoutPromptManager = false
         private var test_persistentBindingResolutionSnapshotBuildCount = 0
         var test_sidebarSessionRowsBuildCount = 0
@@ -2500,6 +2504,12 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                     self?.syncAllActiveUIState()
                 }
             }
+            .store(in: &cancellables)
+        // The content-judgments pill is scoped to this window's active workspace.
+        workspaceManager.$activeWorkspaceID
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncStatusPillsUIState() }
             .store(in: &cancellables)
         updateDynamicModelPolling(startCursorPolling: false)
         syncAllActiveUIState()

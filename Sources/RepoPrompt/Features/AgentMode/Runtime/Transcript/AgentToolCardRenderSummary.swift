@@ -327,9 +327,20 @@ enum AgentToolCardRenderSummaryBuilder {
             ?? trimmed(stringValue(argsObject, keys: ["path"]))
         let name = fileName(from: path ?? "file")
         let lineSummary: String? = {
+            guard let totalLines = intValue(rawObject, keys: ["total_lines", "totalLines"]) else { return nil }
+            if let rawRanges = rawObject?["line_ranges"] as? [[String: Any]], !rawRanges.isEmpty {
+                let ranges = rawRanges.compactMap { range -> String? in
+                    guard let start = intValue(range, keys: ["start"]),
+                          let end = intValue(range, keys: ["end"])
+                    else { return nil }
+                    return "\(start)-\(end)"
+                }
+                if ranges.count == rawRanges.count {
+                    return "Lines \(ranges.joined(separator: ", ")) of \(totalLines)"
+                }
+            }
             guard let firstLine = intValue(rawObject, keys: ["first_line", "firstLine"]),
-                  let lastLine = intValue(rawObject, keys: ["last_line", "lastLine"]),
-                  let totalLines = intValue(rawObject, keys: ["total_lines", "totalLines"])
+                  let lastLine = intValue(rawObject, keys: ["last_line", "lastLine"])
             else { return nil }
             return "Lines \(firstLine)-\(lastLine) of \(totalLines)"
         }()

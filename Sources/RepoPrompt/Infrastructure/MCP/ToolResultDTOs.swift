@@ -110,6 +110,26 @@ enum ToolResultDTOs {
     }
 
     struct SearchResultDTO: Codable, Equatable {
+        struct SemanticRerank: Codable, Equatable {
+            let applied: Bool
+            let reason: String?
+            let presence: Double?
+            let jevInputTokens: Int?
+            let judgedMatchCount: Int?
+            let reorderedMatchCount: Int?
+            let prioritizedChars: Int?
+            let policyVersion: String
+
+            private enum CodingKeys: String, CodingKey {
+                case applied, reason, presence
+                case jevInputTokens = "jev_input_tokens"
+                case judgedMatchCount = "judged_match_count"
+                case reorderedMatchCount = "reordered_match_count"
+                case prioritizedChars = "prioritized_chars"
+                case policyVersion = "policy_version"
+            }
+        }
+
         struct ContentMatchGroup: Codable, Equatable {
             struct ContextLine: Codable, Equatable, Hashable {
                 let lineNumber: Int
@@ -168,6 +188,7 @@ enum ToolResultDTOs {
         let warning: String?
         let perFileTotals: [PerFileCount]?
         let worktreeScope: WorktreeScopeDTO?
+        let semanticRerank: SemanticRerank?
 
         /// Custom initializer to keep existing call sites source-compatible while allowing optional size-cap fields.
         init(
@@ -192,7 +213,8 @@ enum ToolResultDTOs {
             suggestion: String? = nil,
             warning: String? = nil,
             perFileTotals: [PerFileCount]? = nil,
-            worktreeScope: WorktreeScopeDTO? = nil
+            worktreeScope: WorktreeScopeDTO? = nil,
+            semanticRerank: SemanticRerank? = nil
         ) {
             self.totalMatches = totalMatches
             self.totalFiles = totalFiles
@@ -216,6 +238,7 @@ enum ToolResultDTOs {
             self.warning = warning
             self.perFileTotals = perFileTotals
             self.worktreeScope = worktreeScope
+            self.semanticRerank = semanticRerank
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -243,6 +266,7 @@ enum ToolResultDTOs {
             case warning
             case perFileTotals = "per_file_totals"
             case worktreeScope = "worktree_scope"
+            case semanticRerank = "semantic_rerank"
         }
     }
 
@@ -826,6 +850,28 @@ enum ToolResultDTOs {
 
     /// Reply structure for read_file tool, carrying slice metadata
     struct ReadFileReply: Codable, Equatable {
+        struct LineRange: Codable, Equatable {
+            let start: Int
+            let end: Int
+        }
+
+        struct SemanticFilter: Codable, Equatable {
+            let applied: Bool
+            let reason: String?
+            let jevInputTokens: Int?
+            let windowsConsidered: Int?
+            let windowsKept: Int?
+            let policyVersion: String
+
+            private enum CodingKeys: String, CodingKey {
+                case applied, reason
+                case jevInputTokens = "jev_input_tokens"
+                case windowsConsidered = "windows_considered"
+                case windowsKept = "windows_kept"
+                case policyVersion = "policy_version"
+            }
+        }
+
         let content: String
         let totalLines: Int
         let firstLine: Int
@@ -837,6 +883,9 @@ enum ToolResultDTOs {
         let errorCode: String?
         let retryable: Bool?
         let retryAfterMilliseconds: Int?
+        let lineRanges: [LineRange]?
+        let relevantTo: String?
+        let semanticFilter: SemanticFilter?
 
         init(
             content: String,
@@ -849,7 +898,10 @@ enum ToolResultDTOs {
             errorMessage: String? = nil,
             errorCode: String? = nil,
             retryable: Bool? = nil,
-            retryAfterMilliseconds: Int? = nil
+            retryAfterMilliseconds: Int? = nil,
+            lineRanges: [LineRange]? = nil,
+            relevantTo: String? = nil,
+            semanticFilter: SemanticFilter? = nil
         ) {
             self.content = content
             self.totalLines = totalLines
@@ -862,6 +914,9 @@ enum ToolResultDTOs {
             self.errorCode = errorCode
             self.retryable = retryable
             self.retryAfterMilliseconds = retryAfterMilliseconds
+            self.lineRanges = lineRanges
+            self.relevantTo = relevantTo
+            self.semanticFilter = semanticFilter
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -876,6 +931,9 @@ enum ToolResultDTOs {
             case errorCode = "error_code"
             case retryable
             case retryAfterMilliseconds = "retry_after_ms"
+            case lineRanges = "line_ranges"
+            case relevantTo = "relevant_to"
+            case semanticFilter = "semantic_filter"
         }
     }
 

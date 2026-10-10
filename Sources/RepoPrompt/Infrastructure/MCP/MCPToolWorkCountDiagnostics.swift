@@ -140,14 +140,19 @@ enum MCPToolWorkCountDiagnostics {
                 lock.unlock()
             }
 
-            func recordResult(returnedBytes: Int, returnedLines: Int, cacheHit: Bool) {
+            func recordCacheHit(_ cacheHit: Bool) {
                 lock.lock()
-                self.returnedBytes = max(0, returnedBytes)
-                self.returnedLines = max(0, returnedLines)
                 self.cacheHit = cacheHit
                 if cacheHit, source == "unknown" {
                     source = "interactive_cache"
                 }
+                lock.unlock()
+            }
+
+            func recordResult(returnedBytes: Int, returnedLines: Int) {
+                lock.lock()
+                self.returnedBytes = max(0, returnedBytes)
+                self.returnedLines = max(0, returnedLines)
                 lock.unlock()
             }
 
@@ -317,12 +322,17 @@ enum MCPToolWorkCountDiagnostics {
         #endif
     }
 
-    static func recordReadFileResult(returnedBytes: Int, returnedLines: Int, cacheHit: Bool) {
+    static func recordReadFileCacheHit(_ cacheHit: Bool) {
+        #if DEBUG
+            currentReadFileCapture?.recordCacheHit(cacheHit)
+        #endif
+    }
+
+    static func recordReadFileResult(returnedBytes: Int, returnedLines: Int) {
         #if DEBUG
             currentReadFileCapture?.recordResult(
                 returnedBytes: returnedBytes,
-                returnedLines: returnedLines,
-                cacheHit: cacheHit
+                returnedLines: returnedLines
             )
         #endif
     }

@@ -130,12 +130,19 @@ actor JevRouterCredentialService: AgentTaskRouterBackendSettingsController {
     }
 
     func judgeForRouting(_ request: JevRoutingWireRequest) async throws -> JevRoutingWireResponse {
+        try await judge(request, timeout: JevRoutingClient.outerDeadline)
+    }
+
+    /// Submits one request with a caller-owned deadline. Routing uses `outerDeadline`; content
+    /// judgments pass their shorter per-consumer budget. Authentication failures invalidate the
+    /// current credential generation for every consumer.
+    func judge(_ request: JevRoutingWireRequest, timeout: Duration) async throws -> JevRoutingWireResponse {
         let credential = try await loadForRouting()
         do {
             return try await client.judge(
                 request: request,
                 apiKey: credential.key,
-                timeout: JevRoutingClient.outerDeadline
+                timeout: timeout
             )
         } catch {
             if error as? JevRoutingClientError == .authentication,

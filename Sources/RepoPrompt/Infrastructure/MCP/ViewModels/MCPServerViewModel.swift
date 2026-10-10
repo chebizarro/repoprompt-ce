@@ -2012,7 +2012,8 @@ final class MCPServerViewModel: ObservableObject {
         runtime: windowToolRuntime,
         context: windowToolContextCapabilities,
         selection: windowToolSelectionCapabilities,
-        files: windowToolFileCapabilities
+        files: windowToolFileCapabilities,
+        contentJudgments: WindowStatesManager.shared.modelRouterRuntime.contentJudgments
     )
 
     @MainActor
@@ -6601,14 +6602,12 @@ final class MCPServerViewModel: ObservableObject {
         lineCount: Int? = nil,
         lookupContext: WorkspaceLookupContext = .visibleWorkspace
     ) async throws -> MCPAppFileReadResult {
-        try await MCPToolWorkCountDiagnostics.withReadFileInvocation { [self] in
-            try await readFileBody(
-                input: input,
-                startLine1Based: startLine1Based,
-                lineCount: lineCount,
-                lookupContext: lookupContext
-            )
-        }
+        try await readFileBody(
+            input: input,
+            startLine1Based: startLine1Based,
+            lineCount: lineCount,
+            lookupContext: lookupContext
+        )
     }
 
     static func resolveReadFileRequestAfterFreshness(
@@ -6709,11 +6708,7 @@ final class MCPServerViewModel: ObservableObject {
             throw MCPError.invalidParams("start_line must be positive (1-based) or negative (tail-like behavior)")
         }
 
-        MCPToolWorkCountDiagnostics.recordReadFileResult(
-            returnedBytes: preparedReply.reply.content.utf8.count,
-            returnedLines: preparedReply.returnedLineCount,
-            cacheHit: cacheHit
-        )
+        MCPToolWorkCountDiagnostics.recordReadFileCacheHit(cacheHit)
         switch readableFile {
         case let .workspace(file):
             return .workspace(reply: preparedReply.reply, absolutePhysicalPath: file.standardizedFullPath)

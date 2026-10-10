@@ -13,6 +13,7 @@ extension AgentModeViewModel {
             interviewFirst: interviewFirst,
             modelRouter: modelRouterPillProps(),
             autoEffort: autoEffortPillProps(),
+            contentJudgments: contentJudgmentsPillProps(),
             executionLocation: executionLocationProps(tabID: currentTabID),
             activeAgentSessionID: activeSession?.activeAgentSessionID,
             activeRunID: activeSession?.runID,

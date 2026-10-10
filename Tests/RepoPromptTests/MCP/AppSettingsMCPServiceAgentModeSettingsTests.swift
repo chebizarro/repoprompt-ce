@@ -119,6 +119,53 @@ final class AppSettingsMCPServiceAgentModeSettingsTests: XCTestCase {
         XCTAssertFalse(store.codexReasoningSummariesEnabled())
     }
 
+    #if DEBUG
+        func testJevContentJudgmentDiagnosticsKeysListAndWriteUserDefaultsInDebug() async throws {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("AppSettingsMCPServiceJevDiagnosticsTests-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let suiteName = "AppSettingsMCPServiceJevDiagnosticsTests.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let store = GlobalSettingsStore(
+                defaults: defaults,
+                fileStore: GlobalSettingsFileStore(fileURL: root.appendingPathComponent("globalSettings.json"))
+            )
+            let service = AppSettingsMCPService(store: store)
+            let enabledKey = "agent_mode.jev_content_judgment_diagnostics_enabled"
+            let pathKey = "agent_mode.jev_content_judgment_log_file_path"
+
+            let listed = try await service.handleForTesting([
+                "op": .string("list"),
+                "group": .string("agent_mode"),
+                "detailed": .bool(true)
+            ])
+            let settings = try XCTUnwrap(listed.objectValue?["settings"]?.arrayValue)
+            let enabledEntry = try XCTUnwrap(settings.first { $0.objectValue?["key"]?.stringValue == enabledKey })
+            XCTAssertEqual(enabledEntry.objectValue?["type"]?.stringValue, "boolean")
+            XCTAssertEqual(enabledEntry.objectValue?["value"]?.boolValue, false)
+            let pathEntry = try XCTUnwrap(settings.first { $0.objectValue?["key"]?.stringValue == pathKey })
+            XCTAssertEqual(pathEntry.objectValue?["value"]?.stringValue, "")
+
+            _ = try await service.handleForTesting([
+                "op": .string("set"), "key": .string(enabledKey), "value": .bool(true)
+            ])
+            XCTAssertTrue(defaults.bool(forKey: "jevContentJudgmentDiagnosticsEnabled"))
+
+            _ = try await service.handleForTesting([
+                "op": .string("set"), "key": .string(pathKey), "value": .string("/tmp/jev-ledger")
+            ])
+            XCTAssertEqual(defaults.string(forKey: "jevContentJudgmentLogFilePath"), "/tmp/jev-ledger")
+
+            _ = try await service.handleForTesting([
+                "op": .string("set"), "key": .string(pathKey), "value": .string("")
+            ])
+            XCTAssertNil(defaults.object(forKey: "jevContentJudgmentLogFilePath"))
+        }
+    #endif
+
     func testAgentChatsPresentationPreferenceRemainsOutsideAppSettingsCatalog() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("AppSettingsMCPServiceAgentModeSettingsTests-\(UUID().uuidString)", isDirectory: true)

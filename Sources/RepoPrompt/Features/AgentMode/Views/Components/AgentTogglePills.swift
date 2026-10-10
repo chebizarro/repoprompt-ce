@@ -230,3 +230,81 @@ struct AgentAutoEffortPill: View {
         }
     }
 }
+
+// MARK: - Content Judgments Pill
+
+struct AgentContentJudgmentsPill: View {
+    let props: AgentContentJudgmentsPillProps
+    let onToggle: () -> Void
+    let onConfirmEnable: (UUID) -> Void
+    let onCancelEnable: () -> Void
+
+    @ObservedObject private var fontScale = FontScaleManager.shared
+    @Environment(\.openURL) private var openURL
+
+    static let privacyPolicyURL = URL(string: "https://typesafe.ai/legal/privacy-policy")!
+
+    private var workspaceLabel: String {
+        props.workspaceName.map { "“\($0)”" } ?? "this workspace"
+    }
+
+    private var tooltip: String {
+        guard props.workspaceID != nil else {
+            return "Content judgments need a workspace. Open a workspace in this window to enable them."
+        }
+        if !props.isOn {
+            if !props.isAvailable {
+                return "Content judgments off for \(workspaceLabel). Validate the Jev key in Model Router Settings to enable them."
+            }
+            return "Content judgments off for \(workspaceLabel). Click to let Jev rank file_search and read_file results for this window's active workspace. Search/read relevance text leaves your machine and is sent to TypeSafe."
+        }
+        let availability = props.isAvailable ? "" : " Jev is unavailable; tools return unranked results."
+        return "Content judgments on for \(workspaceLabel), this window's active workspace: file_search and read_file relevance text is sent to TypeSafe (Jev) for ranking. Click to turn off.\(availability)"
+    }
+
+    private var isConfirmationPresented: Binding<Bool> {
+        Binding(
+            get: { props.isAwaitingEnableConfirmation },
+            set: { presented in
+                if !presented { onCancelEnable() }
+            }
+        )
+    }
+
+    var body: some View {
+        let cornerRadius = AgentPillMetrics.cornerRadius()
+        let size = AgentPillMetrics.height()
+        Button(action: onToggle) {
+            ZStack {
+                if props.isOn {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.12))
+                }
+                Image(systemName: "scale.3d")
+                    .font(fontScale.preset.swiftUIFont(sizeAtNormal: 13, weight: .semibold))
+                    .foregroundStyle(props.isOn ? Color.accentColor : .secondary)
+            }
+            .frame(width: size, height: size)
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(props.isOn ? Color.accentColor.opacity(0.4) : Color.secondary.opacity(0.15), lineWidth: props.isOn ? 0.8 : 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(props.workspaceID == nil || (!props.isOn && !props.isAvailable))
+        .hoverTooltip(tooltip, .top)
+        .accessibilityLabel("Content judgments")
+        .accessibilityValue(props.isOn ? "On" : "Off")
+        .confirmationDialog("Enable Content Judgments?", isPresented: isConfirmationPresented) {
+            if let workspaceID = props.workspaceID {
+                Button("Enable for \(props.workspaceName ?? "This Workspace")") { onConfirmEnable(workspaceID) }
+            }
+            Button("View TypeSafe Privacy Policy") { openURL(Self.privacyPolicyURL) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("When enabled for a workspace, search/read relevance text is sent to TypeSafe (Jev) for ranking. For \(workspaceLabel), when an agent asks for relevance ranking, TypeSafe Jev receives the query plus the file text being judged: matching search lines with their file paths, or the contents of the file being read. Secrets or sensitive text in those files can be sent. Other workspaces are unaffected. TypeSafe privacy policy: typesafe.ai/legal/privacy-policy")
+        }
+    }
+}

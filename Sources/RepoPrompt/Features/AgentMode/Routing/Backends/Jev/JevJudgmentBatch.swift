@@ -90,9 +90,9 @@ struct JevJudgmentBatch: Equatable {
             result[question.id] = JevRoutingWireRequest.Question(
                 type: JevJudgmentQuestion.choiceType,
                 instructions: question.instructions,
-                criteria: question.criteria.reduce(into: [:]) { criteria, criterion in
+                criteria: .labeled(question.criteria.reduce(into: [:]) { criteria, criterion in
                     criteria[criterion.opaqueKey] = criterion.description
-                }
+                })
             )
         }
     }

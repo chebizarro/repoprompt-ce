@@ -510,6 +510,10 @@
             "description" : "File path",
             "type" : "string"
           },
+          "relevant_to" : {
+            "description" : "Optional relevance intent. When the workspace has content judgments enabled and the read fits a single judgment budget, only line windows relevant to this intent are returned, with `line_ranges` metadata. Otherwise the full read is returned unchanged.",
+            "type" : "string"
+          },
           "start_line" : {
             "description" : "Line to start from (1-based) or negative for tail behavior (-N reads last N lines)",
             "type" : "integer"
@@ -596,6 +600,10 @@
           "regex" : {
             "description" : "Use regex matching (default: auto based on pattern)",
             "type" : "boolean"
+          },
+          "semantic_query" : {
+            "description" : "Optional semantic intent. When the workspace has content judgments enabled, matches are re-ranked by relevance to this intent before size-capping. Ignored otherwise.",
+            "type" : "string"
           },
           "whole_word" : {
             "description" : "Match whole words only",

@@ -1113,7 +1113,42 @@ package enum MCPDomainCanonicalToolDefinitions {
         else {
             preconditionFailure("Invalid canonical MCP domain tool definitions")
         }
-        return (canonicalize ? definitions.map(canonicalizeGlobalSemantics) : definitions).map(advertiseModelParameters)
+        return (canonicalize ? definitions.map(canonicalizeGlobalSemantics) : definitions)
+            .map(advertiseModelParameters)
+            .map(advertiseContentJudgmentParameters)
+    }
+
+    private static func advertiseContentJudgmentParameters(
+        _ definition: MCPDomainToolDefinition
+    ) -> MCPDomainToolDefinition {
+        let parameter: String
+        let description: String
+        switch definition.name {
+        case MCPWindowToolName.search:
+            parameter = "semantic_query"
+            description = "Optional semantic intent. When the workspace has content judgments enabled, matches are re-ranked by relevance to this intent before size-capping. Ignored otherwise."
+        case MCPWindowToolName.readFile:
+            parameter = "relevant_to"
+            description = "Optional relevance intent. When the workspace has content judgments enabled and the read fits a single judgment budget, only line windows relevant to this intent are returned, with `line_ranges` metadata. Otherwise the full read is returned unchanged."
+        default:
+            return definition
+        }
+        guard case var .object(schema) = definition.inputSchema,
+              case var .object(properties)? = schema["properties"]
+        else { return definition }
+
+        properties[parameter] = .object([
+            "description": .string(description),
+            "type": .string("string")
+        ])
+        schema["properties"] = .object(properties)
+        return MCPDomainToolDefinition(
+            name: definition.name,
+            description: definition.description,
+            inputSchema: .object(schema),
+            annotations: definition.annotations,
+            isEnabledByDefault: definition.isEnabledByDefault
+        )
     }
 
     private static func advertiseModelParameters(

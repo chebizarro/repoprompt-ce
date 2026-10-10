@@ -17,21 +17,30 @@ final class MCPFileToolProvider: MCPAppToolProviding {
     )
 
     private let dependencies: Dependencies
+    private let contentJudgments: (any JevContentJudging)?
 
     private struct ReadAuthority {
         let metadata: MCPServerViewModel.RequestMetadata
         let frozen: MCPServerViewModel.FrozenFileToolAuthority
         let dependencies: Dependencies
         let isRunlessOneShotHint: Bool
+        let identity: WorkspaceSelectionIdentity?
 
         var lookupContext: WorkspaceLookupContext {
             frozen.lookupContext
         }
     }
 
-    init(runtime: MCPAppToolBinder, context: MCPAppPhysicalCapabilityAdapters.Context, selection: MCPAppPhysicalCapabilityAdapters.Selection, files: MCPAppPhysicalCapabilityAdapters.Files) {
+    init(
+        runtime: MCPAppToolBinder,
+        context: MCPAppPhysicalCapabilityAdapters.Context,
+        selection: MCPAppPhysicalCapabilityAdapters.Selection,
+        files: MCPAppPhysicalCapabilityAdapters.Files,
+        contentJudgments: (any JevContentJudging)? = nil
+    ) {
         self.runtime = runtime
         dependencies = (context: context, selection: selection, files: files)
+        self.contentJudgments = contentJudgments
     }
 
     func buildTools() -> [Tool] {
@@ -77,7 +86,8 @@ final class MCPFileToolProvider: MCPAppToolProviding {
                 metadata: appContext.metadata,
                 frozen: frozen,
                 dependencies: appContext.fileToolDependencies,
-                isRunlessOneShotHint: appContext.resolvedTabContext.isRunlessOneShotHint
+                isRunlessOneShotHint: appContext.resolvedTabContext.isRunlessOneShotHint,
+                identity: Self.selectionIdentity(from: appContext.resolvedTabContext)
             )
             try await validate(authority)
             return authority
@@ -92,8 +102,23 @@ final class MCPFileToolProvider: MCPAppToolProviding {
             metadata: metadata,
             frozen: frozen,
             dependencies: dependencies,
-            isRunlessOneShotHint: route.isRunlessOneShotHint
+            isRunlessOneShotHint: route.isRunlessOneShotHint,
+            identity: Self.selectionIdentity(from: route)
         )
+    }
+
+    private static func selectionIdentity(
+        from route: MCPServerViewModel.ResolvedTabContextSnapshot
+    ) -> WorkspaceSelectionIdentity? {
+        guard let workspaceID = route.snapshot.workspaceID else { return nil }
+        return WorkspaceSelectionIdentity(workspaceID: workspaceID, tabID: route.snapshot.tabID)
+    }
+
+    nonisolated static func resolveContentJudgmentsGate(identity: WorkspaceSelectionIdentity?) async -> Bool {
+        guard let workspaceID = identity?.workspaceID else { return false }
+        return await MainActor.run {
+            GlobalSettingsStore.shared.contentJudgmentsEnabled(workspaceID: workspaceID)
+        }
     }
 
     private func validate(_ authority: ReadAuthority) async throws {
@@ -523,7 +548,9 @@ final class MCPFileToolProvider: MCPAppToolProviding {
         authority: ReadAuthority,
         sideEffects: MCPDomainReadSideEffectEmitter
     ) async throws -> Value {
-        try await executeReadFileBody(args: args, authority: authority, sideEffects: sideEffects)
+        try await MCPToolWorkCountDiagnostics.withReadFileInvocation {
+            try await executeReadFileBody(args: args, authority: authority, sideEffects: sideEffects)
+        }
     }
 
     private func executeReadFileBody(
@@ -548,6 +575,7 @@ final class MCPFileToolProvider: MCPAppToolProviding {
             let limit = args["limit"]?.intValue ?? args["limit"]?.stringValue.flatMap(Int.init)
             return (path, startLine1Based, limit)
         }
+        let relevantTo = args["relevant_to"]?.stringValue
         let metadata = authority.metadata
         try Task.checkCancellation()
         let lookupContext = EditFlowPerf.measure(EditFlowPerf.Stage.ReadFile.providerLookupContextResolution) {
@@ -599,7 +627,7 @@ final class MCPFileToolProvider: MCPAppToolProviding {
         let unprojectedReply = switch unprojectedReadResult {
         case let .workspace(reply, _), let .nonSelecting(reply): reply
         }
-        let readResult: MCPAppFileReadResult = try await EditFlowPerf.measure(
+        let projectedReadResult: MCPAppFileReadResult = try await EditFlowPerf.measure(
             EditFlowPerf.Stage.ReadFile.providerReplyProjection
         ) {
             let reply = try await MCPReadFileToolProjection.projectReply(
@@ -613,6 +641,28 @@ final class MCPFileToolProvider: MCPAppToolProviding {
             case .nonSelecting:
                 .nonSelecting(reply: reply)
             }
+        }
+        try Task.checkCancellation()
+        let baseReply = switch projectedReadResult {
+        case let .workspace(reply, _), let .nonSelecting(reply): reply
+        }
+        let gateEnabled = if let relevantTo, !relevantTo.isEmpty {
+            await Self.resolveContentJudgmentsGate(identity: authority.identity)
+        } else {
+            false
+        }
+        let filtered = await Self.applyReadFileRelevantTo(
+            baseReply,
+            relevantTo: relevantTo,
+            enabled: gateEnabled,
+            judge: contentJudgments
+        )
+        let returnedLineCount = filtered.returnedLineCount
+        let readResult: MCPAppFileReadResult = switch projectedReadResult {
+        case let .workspace(_, absolutePhysicalPath):
+            .workspace(reply: filtered.reply, absolutePhysicalPath: absolutePhysicalPath)
+        case .nonSelecting:
+            .nonSelecting(reply: filtered.reply)
         }
         try Task.checkCancellation()
         let autoSelectOutcome = switch readResult {
@@ -648,6 +698,10 @@ final class MCPFileToolProvider: MCPAppToolProviding {
         case let .workspace(reply, _), let .nonSelecting(reply): reply
         }
         try await validate(authority)
+        MCPToolWorkCountDiagnostics.recordReadFileResult(
+            returnedBytes: projectedReply.content.utf8.count,
+            returnedLines: returnedLineCount
+        )
         let value = try await EditFlowPerf.measure(EditFlowPerf.Stage.ReadFile.providerValueEncoding) {
             try await MCPProviderProjectionWorker.encode(
                 projectedReply,
@@ -656,6 +710,22 @@ final class MCPFileToolProvider: MCPAppToolProviding {
         }
         EditFlowPerf.lifecycleEvent(EditFlowPerf.Lifecycle.ReadFile.providerResultReady)
         return value
+    }
+
+    static func applyReadFileRelevantTo(
+        _ reply: ToolResultDTOs.ReadFileReply,
+        relevantTo: String?,
+        enabled: Bool,
+        judge: (any JevContentJudging)?
+    ) async -> MCPReadFileSemanticFilter.Result {
+        guard enabled, let relevantTo, !relevantTo.isEmpty else {
+            return .init(
+                reply: reply,
+                returnedLineCount: reply.lineRanges?.reduce(0) { $0 + $1.end - $1.start + 1 }
+                    ?? max(0, reply.lastLine - reply.firstLine + 1)
+            )
+        }
+        return await MCPReadFileSemanticFilter.filter(reply, relevantTo: relevantTo, judge: judge)
     }
 
     private static func readFileFreshnessTimeoutDTO(
@@ -722,6 +792,7 @@ final class MCPFileToolProvider: MCPAppToolProviding {
             ?? 0
         let maxResults = args["max_results"]?.intValue ?? 50
         let countOnly = args["count_only"]?.boolValue ?? false
+        let semanticQuery = args["semantic_query"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         let filter = args["filter"]?.objectValue
         let includeExts = filter?["extensions"]?.arrayValue?.compactMap(\.stringValue) ?? []
         let excludePatterns = filter?["exclude"]?.arrayValue?.compactMap(\.stringValue) ?? []
@@ -924,13 +995,26 @@ final class MCPFileToolProvider: MCPAppToolProviding {
             let pathMatchesFull = (results.paths ?? []).map { displayPath($0) }
             return (normalizedMatches, pathMatchesFull)
         }
-        let contentMatchesFull = normalizedMatches
+        let semanticRerank: MCPFileSearchSemanticRerank.Result? = if MCPFileSearchSemanticRerank.shouldAttempt(query: semanticQuery, countOnly: countOnly),
+                                                                     let semanticQuery,
+                                                                     await Self.resolveContentJudgmentsGate(identity: authority.identity)
+        {
+            await MCPFileSearchSemanticRerank.rerank(
+                matches: normalizedMatches,
+                query: semanticQuery,
+                judge: contentJudgments
+            )
+        } else {
+            nil
+        }
+        let orderedIndices = semanticRerank?.order ?? Array(normalizedMatches.indices)
+        let contentMatchesFull = orderedIndices.map { normalizedMatches[$0] }
 
         let dtoCapAccountingState = EditFlowPerf.begin(
             EditFlowPerf.Stage.Search.dtoCapAccounting,
             dtoBuildDimensions()
         )
-        let budget = max(0, 50000 - 2000)
+        let budget = MCPFileSearchSemanticRerank.capBudget
         var usedChars = 0
         var includedContentMatches: [SearchMatch] = []
         for match in contentMatchesFull {
@@ -1020,14 +1104,15 @@ final class MCPFileToolProvider: MCPAppToolProviding {
                 suggestion: pathFilterSuggestion,
                 warning: results.warningMessage,
                 perFileTotals: perFileTotalsDTO.isEmpty ? nil : perFileTotalsDTO,
-                worktreeScope: worktreeScope
+                worktreeScope: worktreeScope,
+                semanticRerank: semanticRerank?.metadata
             )
         }
         endDTOBuildIfNeeded()
         var physicalPathsByLogicalPath: [String: Set<String>] = [:]
         for (logicalMatch, physicalMatch) in zip(
             includedContentMatches,
-            (results.matches ?? []).prefix(includedContentMatches.count)
+            orderedIndices.prefix(includedContentMatches.count).map { (results.matches ?? [])[$0] }
         ) {
             physicalPathsByLogicalPath[logicalMatch.filePath, default: []].insert(physicalMatch.filePath)
         }
