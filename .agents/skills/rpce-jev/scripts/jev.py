@@ -21,6 +21,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
 import platform
@@ -182,7 +183,34 @@ class JevClient:
 def read_text(path: str) -> str:
     if path == "-":
         return sys.stdin.read()
-    return Path(path).read_text(encoding="utf-8", errors="replace")
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        raise JevError(missing_file_message(path)) from None
+    except IsADirectoryError:
+        raise JevError(f"{path} is a directory, not a file") from None
+    except OSError as error:
+        raise JevError(f"cannot read {path}: {error.strerror or error}") from None
+
+
+def missing_file_message(path: str) -> str:
+    """Explain a missing path and suggest nearby files so the caller can self-correct."""
+    target = Path(path)
+    parent = target.parent if str(target.parent) else Path(".")
+    msg = f"file not found: {path} (cwd: {Path.cwd()})"
+    if not parent.is_dir():
+        return msg + f"; directory {parent} does not exist"
+    try:
+        names = sorted(p.name for p in parent.iterdir() if p.is_file())
+    except OSError:
+        return msg
+    stem = target.stem.lower()
+    close = difflib.get_close_matches(target.name, names, n=5, cutoff=0.5)
+    contains = [n for n in names if stem and stem in n.lower() and n not in close]
+    suggestions = (close + contains)[:5]
+    if suggestions:
+        msg += "; did you mean: " + ", ".join(str(parent / n) for n in suggestions)
+    return msg
 
 
 def chunk_candidates(
@@ -703,6 +731,9 @@ def main(argv: list[str] | None = None) -> int:
         client = JevClient(resolve_api_key(), args.base_url, args.model, timeout=args.timeout)
         args.func(args, client)
     except JevError as error:
+        print(f"jev: {error}", file=sys.stderr)
+        return 2
+    except OSError as error:
         print(f"jev: {error}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
