@@ -85,6 +85,16 @@ Verdicts: supported >= 0.70, unsupported <= 0.30, otherwise unclear. High `elsew
 - `pick-skill` chose `rpce-contribution-check` (fit 0.94) for a commit-validation prompt and returned no skill (gate 0.12, none_p 0.66) for a trivia question.
 - `verify-claim`: true claim 0.83 supported; fabricated claim 0.02 supported / 0.44 elsewhere.
 
+## Field usage (Codex sessions, 2026-09-22 to 2026-10-26, recovered from transcripts)
+
+Before the ledger existed, usage had to be reconstructed from Codex rollout files; these numbers are the baseline the ledger replaces.
+
+- 1,197 Codex sessions saw the skill listed; 301 ran it; 1,776 invocations (1,575 ok): `find-lines` 1,274, `filter-search` 227, `doctor` 118, `verify-claim` 16, `rank-files` 11, `pick-skill` 1.
+- 5,325 Jev requests, 40.9M Jev input tokens, $1.72 total ($1.64 of it `find-lines`).
+- `find-lines` judged 1,988 files (median 565 lines; 2.16M lines) and returned ranges covering 6.3% of them (median 11% per file, p75 19%); 75 files were reported absent.
+- Within three steps of a judgment the agent read only ranges 57% of the time, read the whole file anyway 11%, and did not touch the file 31%. The 11% motivated workflow rule 2 and the Claude PreToolUse nudge.
+- Failures were not Jev errors: `--json` placed after the subcommand (fixed), `J="python3 …"; $J` under zsh (documented), empty `filter-search` input, guessed file paths (now reported with suggestions). 101 judgments were on files under 150 lines.
+
 ## Tuning notes
 
 - Keep one condition per Noul; phrase for the affirmative.
