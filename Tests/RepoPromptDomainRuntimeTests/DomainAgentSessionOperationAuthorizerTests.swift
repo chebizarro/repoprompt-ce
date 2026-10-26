@@ -316,6 +316,10 @@ final class DomainAgentSessionOperationAuthorizerTests: XCTestCase {
 
     func testOperationFamiliesAndMutationClassificationAreExhaustive() {
         XCTAssertEqual(
+            MCPDomainToolCatalog.operationIdentity(for: MCPWindowToolName.agentManage, input: .value("get_source_history")).normalizedOperation,
+            "get_source_history"
+        )
+        XCTAssertEqual(
             Set(sessionControlOperations.map(\.rawValue)),
             [
                 "agent_run.poll", "agent_run.wait", "agent_run.cancel", "agent_run.steer", "agent_run.respond",

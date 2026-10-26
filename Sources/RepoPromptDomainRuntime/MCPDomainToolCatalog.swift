@@ -298,7 +298,7 @@ package enum MCPDomainToolCatalog {
             normalization: .trimmedLowercased
         )),
         .init(name: MCPWindowToolName.agentManage, scope: .window, capability: .agentExternalControl, admissionClass: .control, operationPolicy: .init(
-            operations: ["list_agents", "list_sessions", "get_log", "extract_handoff", "create_session", "resume_session", "stop_session", "cleanup_sessions", "list_workflows"],
+            operations: ["list_agents", "list_sessions", "get_log", "get_source_history", "extract_handoff", "create_session", "resume_session", "stop_session", "cleanup_sessions", "list_workflows"],
             aliases: ["handoff": "extract_handoff"],
             defaultOperation: "list_sessions",
             normalization: .trimmedLowercased
