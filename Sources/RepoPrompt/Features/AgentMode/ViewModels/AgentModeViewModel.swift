@@ -4398,6 +4398,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         let newSession = TabSession(tabID: tabID)
         newSession.onSourceItemsChanged = { [weak self] session, mutation in
             guard let self else { return }
+            session.sourceHistory.capture(session.items)
             if mutation.touchesUserItem {
                 invalidateSidebarRestoreOrdering()
             }
@@ -5622,6 +5623,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             return false
         }
         let agentSession = payload.persistedSession
+        guard let sourceHistory = agentSession.sourceHistory else { return false }
+        session.sourceHistory = sourceHistory
+        session.sourceHistoryDurableRevision = sourceHistory.revision
 
         hydrateSession(
             session,
@@ -15223,6 +15227,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             name: sessionName,
             items: [],
             transcript: persistableSnapshot.transcript,
+            sourceHistory: session.sourceHistory,
             itemCount: canonicalItemCount,
             transcriptProjectionCounts: persistableSnapshot.projectionCounts,
             lastUserMessageAt: lastUserMessageAt,
@@ -15273,6 +15278,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 return .deferred("The session changed while persistence was committing.")
             }
             session.isDirty = false
+            session.sourceHistoryDurableRevision = max(session.sourceHistoryDurableRevision, agentSession.sourceHistory?.revision ?? -1)
             // A session created this launch has no payload to hydrate, so its cold load correctly
             // recorded `.terminal(.missingPayload)`. Durable persistence is the fact that promotes
             // it: from here its file exists and a later launch can hydrate it. Guarded by the save
@@ -15352,6 +15358,30 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             }
             saveCompletionWaitersBySessionID[sessionID, default: []].append(continuation)
         }
+    }
+
+    func durableSourceHistory(sessionID: UUID, workspaceID: UUID) async throws -> AgentSourceHistory {
+        guard let live = try authoritativeLiveSession(for: sessionID) else { throw SourceHistoryError.invalidHistory }
+        let session = await ensureSessionReady(tabID: live.tabID)
+        guard session.activeAgentSessionID == sessionID, workspaceManager?.activeWorkspace?.id == workspaceID else {
+            throw SourceHistoryError.invalidCursor
+        }
+        let binding = session.persistentSessionBindingIdentity
+        let snapshot = session.sourceHistory
+        _ = try snapshot.materialize(through: snapshot.revision)
+        if session.sourceHistoryDurableRevision >= snapshot.revision { return snapshot }
+        session.isDirty = true
+        switch await flushSaveRequired(for: session.tabID, workspaceID: workspaceID) {
+        case .failure: throw SourceHistoryError.invalidHistory
+        case .success: break
+        }
+        guard session.activeAgentSessionID == sessionID, session.persistentSessionBindingIdentity == binding,
+              workspaceManager?.activeWorkspace?.id == workspaceID,
+              session.sourceHistoryDurableRevision >= snapshot.revision
+        else {
+            throw SourceHistoryError.invalidCursor
+        }
+        return snapshot
     }
 
     func flushSave(for tabID: UUID) async {

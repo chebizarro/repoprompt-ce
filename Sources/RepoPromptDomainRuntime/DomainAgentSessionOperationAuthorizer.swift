@@ -15,6 +15,7 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
 
     case manageList = "agent_manage.list_sessions"
     case manageGetLog = "agent_manage.get_log"
+    case manageGetSourceHistory = "agent_manage.get_source_history"
     case manageExtractHandoff = "agent_manage.extract_handoff"
     case manageResume = "agent_manage.resume_session"
     case manageStop = "agent_manage.stop_session"
@@ -42,7 +43,7 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
     package var family: Family {
         switch self {
         case .runPoll, .runWait, .runCancel, .runSteer, .runRespond,
-             .manageList, .manageGetLog, .manageExtractHandoff,
+             .manageList, .manageGetLog, .manageGetSourceHistory, .manageExtractHandoff,
              .manageResume, .manageStop, .manageCleanup:
             .sessionControl
         case .monitorList, .monitorPoll, .monitorWait, .monitorRead, .monitorSend,
@@ -60,7 +61,7 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
         case .monitorPoll, .monitorWait, .monitorRead, .monitorSend,
              .monitorSnoozeAutoWake,
              .runPoll, .runWait, .runCancel, .runSteer, .runRespond,
-             .manageList, .manageGetLog, .manageExtractHandoff,
+             .manageList, .manageGetLog, .manageGetSourceHistory, .manageExtractHandoff,
              .manageResume, .manageStop, .manageCleanup:
             false
         }
@@ -82,7 +83,7 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
             .sendWhenIdle
         case .monitorList,
              .runPoll, .runWait, .runCancel, .runSteer, .runRespond,
-             .manageList, .manageGetLog, .manageExtractHandoff,
+             .manageList, .manageGetLog, .manageGetSourceHistory, .manageExtractHandoff,
              .manageResume, .manageStop, .manageCleanup:
             nil
         }
@@ -93,7 +94,7 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
         switch self {
         case .runCancel, .runSteer, .runRespond, .manageResume, .manageStop, .manageCleanup, .monitorSend:
             true
-        case .runPoll, .runWait, .manageList, .manageGetLog, .manageExtractHandoff,
+        case .runPoll, .runWait, .manageList, .manageGetLog, .manageGetSourceHistory, .manageExtractHandoff,
              .monitorList, .monitorPoll, .monitorWait, .monitorRead,
              .monitorSnoozeAutoWake:
             false

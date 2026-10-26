@@ -278,6 +278,7 @@ final class MCPAgentControlToolProvider: MCPAppToolProviding {
 
             - `list_agents`: Returns top-level `task_labels` as the authoritative role-label→model mapping (explore, engineer, pair, design), plus `agents[].models[]` with explicit compound `model_id` targets. Cursor model entries also include release-catalog `model_parameters` and exact choices; `current_value` describes the catalog default, not a live session value. The catalog does not synthesize model variants. Use `task_labels` entries for role-based routing; use `agents[].models[].model_id` for exact selections. Pass `roles_only=true` to return only `task_labels` and omit the explicit per-agent target catalog.
             - `list_sessions`: Browse sessions. Returns `session_id` for each session. Filter by MCP-facing `state` (e.g. `running`, `waiting_for_input`, `completed`, `failed`). When called from agent mode, automatically scopes to sessions spawned by the current agent session.
+            - `get_source_history`: Read durable user/assistant-only chat occurrences and revisions, independent of transcript compaction. Frozen complete JSON pages; cursor continuations never silently restart.
             - `get_log`: Read faithful transcript XML for a session, preserving visible assistant/tool order without handoff compaction or narration pruning. Use `offset`/`limit` to page by turns.
             - `extract_handoff` (`handoff` alias): Export the full `<forked_session ...>` handoff XML for a live or persisted session. Persisted sessions export transcript-only payloads; `include_file_contents` is accepted only for a live source tab that is currently active so file selection can be snapshotted reliably. Use `output_path` to write to a file; inline XML is returned by default only when no output path is provided.
             - `create_session` / `resume_session`: Create or resume a session with a specific `model_id`. Cursor models may also pass exact `model_parameters` advertised by `list_agents`.
@@ -296,6 +297,7 @@ final class MCPAgentControlToolProvider: MCPAppToolProviding {
                 **list_agents**: roles_only?
                 **list_workflows**: no additional fields
                 **list_sessions**: agent?, state?, limit?
+                **get_source_history**: session_id (required), cursor? OR after_revision?, limit? (1...256), max_bytes? (1024...8388608)
                 **get_log**: session_id (required), offset?, limit?
                 **extract_handoff / handoff**: session_id (required), up_to_item_id?, include_file_contents?, output_path?, overwrite?, inline?, max_transcript_items?, max_tool_args_characters?
                 **create_session**: model_id?, model_parameters?, session_name?
@@ -309,7 +311,7 @@ final class MCPAgentControlToolProvider: MCPAppToolProviding {
                 Default extraction behavior: `extract_handoff` (or alias `handoff`) returns `handoff_xml` inline when `output_path` is omitted. When `output_path` is provided, XML is written to disk and omitted from the response unless `inline=true`. `output_path` must be absolute (or `~/...`); CLI shorthand resolves relative paths before calling MCP.
                 """,
                 properties: [
-                    "op": .string(description: "Operation.", enum: ["list_agents", "list_sessions", "get_log", "extract_handoff", "handoff", "create_session", "resume_session", "stop_session", "cleanup_sessions", "list_pinned_sessions", "set_session_pin", "reorder_pinned_sessions", "list_workflows"]),
+                    "op": .string(description: "Operation.", enum: ["list_agents", "list_sessions", "get_log", "get_source_history", "extract_handoff", "handoff", "create_session", "resume_session", "stop_session", "cleanup_sessions", "list_pinned_sessions", "set_session_pin", "reorder_pinned_sessions", "list_workflows"]),
                     "model_id": .string(description: "[create_session, resume_session] Role label from list_agents task_labels (explore, engineer, pair, design — resolved via global role defaults), or an explicit compound model_id from list_agents agents[].models[].model_id."),
                     "model_parameters": modelParametersSchema(operations: "create_session, resume_session"),
                     "session_id": .string(description: "[get_log, extract_handoff, resume_session, stop_session] Session UUID."),
@@ -323,6 +325,9 @@ final class MCPAgentControlToolProvider: MCPAppToolProviding {
                     "max_transcript_items": .integer(description: "[extract_handoff] Transcript item budget; clamped to 1...1000. Default 200."),
                     "max_tool_args_characters": .integer(description: "[extract_handoff] Tool argument character budget; clamped to 0...20000. Default 2000."),
                     "state": .string(description: "[list_sessions] Session state filter. Use MCP-facing values such as running, waiting_for_input, completed, failed."),
+                    "cursor": .string(description: "[get_source_history] Opaque fixed-snapshot continuation. Mutually exclusive with after_revision."),
+                    "after_revision": .integer(description: "[get_source_history] Start a changes window after this durable revision; omit for initial snapshot."),
+                    "max_bytes": .integer(description: "[get_source_history] Complete JSON page byte budget, default1048576, max8388608. Oversized records refuse without truncation."),
                     "offset": .integer(description: "[get_log] Turn offset."),
                     "session_ids": .array(description: "[cleanup_sessions, reorder_pinned_sessions] Session UUIDs. Reorder requires the complete desired pinned order.", items: .string()),
                     "expected_session_ids": .array(description: "[reorder_pinned_sessions] Exact current pinned order returned by list_pinned_sessions.", items: .string()),

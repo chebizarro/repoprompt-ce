@@ -137,8 +137,8 @@ struct AgentTokenUsagePersist: Codable, Equatable {
 
 /// Persisted agent mode session containing the chat transcript and configuration
 struct AgentSession: Codable, Identifiable {
-    // 9 adds the granular observer-session Auto-wake target UUID set.
-    static let currentSerializationVersion = 9
+    // 10 retains source chat independently of transcript compaction.
+    static let currentSerializationVersion = 10
     static let legacyUnversionedSerializationVersion = 0
 
     let id: UUID
@@ -158,6 +158,7 @@ struct AgentSession: Codable, Identifiable {
 
     /// Structured transcript source of truth. Compacted turns may retain only summary shells.
     var transcript: AgentTranscript?
+    var sourceHistory: AgentSourceHistory?
 
     /// Optional lightweight item count for sessions where transcript/items are unloaded.
     var itemCount: Int?
@@ -254,6 +255,7 @@ struct AgentSession: Codable, Identifiable {
         fileURL: URL? = nil,
         items: [AgentChatItemPersist] = [],
         transcript: AgentTranscript? = nil,
+        sourceHistory: AgentSourceHistory? = .init(),
         itemCount: Int? = nil,
         transcriptProjectionCounts: AgentTranscriptProjectionCounts? = nil,
         lastUserMessageAt: Date? = nil,
@@ -299,6 +301,7 @@ struct AgentSession: Codable, Identifiable {
         self.fileURL = fileURL
         self.items = items
         self.transcript = transcript
+        self.sourceHistory = sourceHistory
         self.itemCount = itemCount
         self.transcriptProjectionCounts = transcriptProjectionCounts
         self.lastUserMessageAt = lastUserMessageAt
@@ -346,6 +349,7 @@ struct AgentSession: Codable, Identifiable {
         case fileURL
         case items
         case transcript
+        case sourceHistory
         case itemCount
         case transcriptProjectionCounts
         case lastUserMessageAt
@@ -396,6 +400,10 @@ struct AgentSession: Codable, Identifiable {
         fileURL = try container.decodeIfPresent(URL.self, forKey: .fileURL)
         items = try container.decodeIfPresent([AgentChatItemPersist].self, forKey: .items) ?? []
         transcript = try container.decodeIfPresent(AgentTranscript.self, forKey: .transcript)
+        sourceHistory = try container.decodeIfPresent(AgentSourceHistory.self, forKey: .sourceHistory)
+        if serializationVersion >= 10, sourceHistory == nil {
+            throw SourceHistoryError.invalidHistory
+        }
         itemCount = try container.decodeIfPresent(Int.self, forKey: .itemCount)
         transcriptProjectionCounts = try container.decodeIfPresent(AgentTranscriptProjectionCounts.self, forKey: .transcriptProjectionCounts)
         lastUserMessageAt = try container.decodeIfPresent(Date.self, forKey: .lastUserMessageAt)
@@ -550,11 +558,16 @@ extension AgentSession {
 
     /// Creates a new session with updated items from live chat items
     func withItems(_ liveItems: [AgentChatItem]) -> AgentSession {
+        let canonicalItems = AgentSourceItemIDRepair.repairDuplicateIDs(in: liveItems).items
         var copy = self
-        copy.items = liveItems.map { AgentChatItemPersist(from: $0) }
+        if copy.sourceHistory == nil, copy.serializationVersion < 10 {
+            copy.sourceHistory = AgentSourceHistory(coverage: "retained_at_upgrade")
+        }
+        copy.sourceHistory?.capture(canonicalItems)
+        copy.items = canonicalItems.map { AgentChatItemPersist(from: $0) }
         let transcript = AgentTranscriptIO.buildTranscript(
-            from: liveItems,
-            nextSequenceIndex: (liveItems.map(\.sequenceIndex).max() ?? -1) + 1,
+            from: canonicalItems,
+            nextSequenceIndex: (canonicalItems.map(\.sequenceIndex).max() ?? -1) + 1,
             policy: .canonical
         )
         copy.transcript = transcript

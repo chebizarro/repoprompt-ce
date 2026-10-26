@@ -287,6 +287,55 @@ final class AgentSessionTargetOperationAuthorizationTests: XCTestCase {
 
     // MARK: - agent_manage
 
+    func testSourceCaptureRunsAtLiveMutationBeforeProjectionOrMCPRead() async throws {
+        let window = try await makeWindow()
+        defer { WindowStatesManager.shared.unregisterWindowState(window) }
+        let workspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let tabID = try XCTUnwrap(workspace.composeTabs.first?.id)
+        let session = window.agentModeViewModel.session(for: tabID)
+        let item = AgentChatItem.assistant("capture before compaction", sequenceIndex: 0)
+        session.appendItem(item)
+        XCTAssertEqual(try session.sourceHistory.materialize(through: session.sourceHistory.revision)[item.id]?.text, item.text)
+        session.replaceItems([])
+        XCTAssertEqual(try session.sourceHistory.materialize(through: session.sourceHistory.revision)[item.id]?.text, item.text)
+    }
+
+    func testLiveSourceHistoryCannotExposeHeadWhenSaveFails() async throws {
+        let window = try await makeWindow()
+        defer { WindowStatesManager.shared.unregisterWindowState(window) }
+        let workspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let vm = window.agentModeViewModel
+        let tabID = try XCTUnwrap(workspace.composeTabs.first?.id)
+        let session = await vm.ensureSessionReady(tabID: tabID)
+        let id = try XCTUnwrap(vm.test_ensureSessionBoundToTab(session))
+        vm.test_setAgentSessionSaver { _, _, _ in throw SourceHistoryError.invalidHistory }
+        session.appendItem(.assistant("not durable yet", sequenceIndex: 0))
+        do {
+            _ = try await vm.durableSourceHistory(sessionID: id, workspaceID: workspace.id)
+            XCTFail("An unsaved source head escaped through the read API")
+        } catch {
+            XCTAssertLessThan(session.sourceHistoryDurableRevision, session.sourceHistory.revision)
+        }
+    }
+
+    func testNativeHistoryReadsAnAuthorizedPersistedSession() async throws {
+        let window = try await makeWindow()
+        defer { WindowStatesManager.shared.unregisterWindowState(window) }
+        let workspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let child = UUID()
+        var session = AgentSession(id: child, workspaceID: workspace.id, parentSessionID: callerSessionID)
+        session = session.withItems([.user("  exact user ", sequenceIndex: 0), .assistant("answer 🌍", sequenceIndex: 1)])
+        _ = try await AgentSessionDataService.shared.saveAgentSession(session, for: workspace)
+        let service = makeManageService(window: window, callerSessionID: callerSessionID)
+        let first = try await service.execute(args: ["op": .string("get_source_history"), "session_id": .string(child.uuidString), "limit": .int(1)])
+        XCTAssertEqual(first.objectValue?["head_revision"]?.intValue, 2)
+        XCTAssertEqual(first.objectValue?["complete"]?.boolValue, false)
+        let cursor = try XCTUnwrap(first.objectValue?["next_cursor"]?.stringValue)
+        let second = try await service.execute(args: ["op": .string("get_source_history"), "session_id": .string(child.uuidString), "cursor": .string(cursor)])
+        XCTAssertEqual(second.objectValue?["complete"]?.boolValue, true)
+        XCTAssertEqual(second.objectValue?["records"]?.arrayValue?.first?.objectValue?["text"]?.stringValue, "answer 🌍")
+    }
+
     func testAgentOriginCallerCannotGetLogOrStopAnUnrelatedSession() async throws {
         let window = try await makeWindow()
         defer { WindowStatesManager.shared.unregisterWindowState(window) }
@@ -295,7 +344,7 @@ final class AgentSessionTargetOperationAuthorizationTests: XCTestCase {
         try await persistSession(id: sibling, workspace: workspace, parentSessionID: nil)
         let service = makeManageService(window: window, callerSessionID: callerSessionID)
 
-        for op in ["get_log", "stop_session", "extract_handoff"] {
+        for op in ["get_log", "get_source_history", "stop_session", "extract_handoff"] {
             await assertUniformDenial(reference: sibling.uuidString) {
                 try await service.execute(args: [
                     "op": .string(op),
@@ -327,7 +376,7 @@ final class AgentSessionTargetOperationAuthorizationTests: XCTestCase {
         siblingSession.hasLoadedPersistedState = false
 
         let service = makeManageService(window: window, callerSessionID: callerSessionID)
-        for op in ["get_log", "extract_handoff"] {
+        for op in ["get_log", "get_source_history", "extract_handoff"] {
             await assertUniformDenial(reference: sibling.uuidString) {
                 try await service.execute(args: [
                     "op": .string(op),

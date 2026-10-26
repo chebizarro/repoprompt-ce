@@ -166,6 +166,36 @@ private actor AgentSessionDiskWriter {
 
 /// An actor that reads/writes AgentSessions from each workspace's "AgentSessions" folder.
 actor AgentSessionDataService {
+    private var sourceWriteOwners: Set<URL> = []
+    private var sourceWriteWaiters: [URL: [CheckedContinuation<Void, Never>]] = [:]
+
+    private func acquireSourceWrite(_ url: URL) async {
+        if sourceWriteOwners.insert(url).inserted { return }
+        await withCheckedContinuation { sourceWriteWaiters[url, default: []].append($0) }
+    }
+
+    private func releaseSourceWrite(_ url: URL) {
+        if var waiters = sourceWriteWaiters[url], !waiters.isEmpty {
+            let next = waiters.removeFirst()
+            sourceWriteWaiters[url] = waiters
+            next.resume()
+        } else {
+            sourceWriteWaiters.removeValue(forKey: url)
+            sourceWriteOwners.remove(url)
+        }
+    }
+
+    private func bootstrapSourceHistory(_ session: AgentSession, canonicalWorkingItems: [AgentChatItem]) -> AgentSourceHistory {
+        var history = AgentSourceHistory(coverage: "retained_at_upgrade")
+        var items = canonicalWorkingItems
+        if let transcript = session.transcript {
+            items += transcript.turns.filter { $0.retentionTier != .full }.compactMap { $0.request?.toItem() }
+        }
+        items.sort { $0.sequenceIndex < $1.sequenceIndex }
+        history.capture(items)
+        return history
+    }
+
     static let shared = AgentSessionDataService()
 
     static func defaultWorkspaceRootURL() -> URL {
@@ -336,6 +366,35 @@ actor AgentSessionDataService {
         trustedCanonicalItemCount: Int? = nil
     ) -> AgentSession {
         var stored = session
+        if stored.sourceHistory == nil, stored.serializationVersion < 10 {
+            let canonical = stored.transcript.map(AgentTranscriptIO.workingSourceItems(from:))
+                ?? AgentSourceItemIDRepair.repairDuplicateIDs(in: stored.items.map { $0.toItem() }).items
+            stored.sourceHistory = bootstrapSourceHistory(stored, canonicalWorkingItems: canonical)
+            stored.items = canonical.map { AgentChatItemPersist(from: $0) }
+            if let transcript = stored.transcript {
+                stored.transcript = AgentTranscriptIO.rebuiltTranscriptPreservingCompactedPrefix(
+                    existingTranscript: transcript, workingItems: canonical,
+                    terminalState: stored.lastRunState.flatMap(AgentSessionRunState.init(rawValue:)),
+                    nextSequenceIndex: transcript.nextSequenceIndex, policy: .canonical
+                )
+            }
+        } else if stored.sourceHistory?.revision == 0, !stored.items.isEmpty {
+            let canonical = AgentSourceItemIDRepair.repairDuplicateIDs(in: stored.items.map { $0.toItem() }).items
+            stored.sourceHistory?.capture(canonical)
+            stored.items = canonical.map { AgentChatItemPersist(from: $0) }
+        } else if stored.sourceHistory?.revision == 0, let transcript = stored.transcript, !transcript.turns.isEmpty {
+            let canonical = AgentTranscriptIO.workingSourceItems(from: transcript)
+            var history = bootstrapSourceHistory(stored, canonicalWorkingItems: canonical)
+            if history.revision > 0 {
+                history.feedID = stored.sourceHistory!.feedID
+                stored.sourceHistory = history
+                stored.transcript = AgentTranscriptIO.rebuiltTranscriptPreservingCompactedPrefix(
+                    existingTranscript: transcript, workingItems: canonical,
+                    terminalState: stored.lastRunState.flatMap(AgentSessionRunState.init(rawValue:)),
+                    nextSequenceIndex: transcript.nextSequenceIndex, policy: .canonical
+                )
+            }
+        }
         let lastRunState = stored.lastRunState.flatMap(AgentSessionRunState.init(rawValue:))
         var workingItemsCache: [AgentChatItem]?
         func workingItems() -> [AgentChatItem] {
@@ -421,6 +480,12 @@ actor AgentSessionDataService {
             }
             return session.items.map { $0.toItem() }
         }()
+        let identityRepair = AgentSourceItemIDRepair.repairDuplicateIDs(in: workingItems)
+        workingItems = identityRepair.items
+        let storedWorkingIDs = storedTranscript?.turns.filter { $0.retentionTier == .full }.flatMap { turn in
+            (turn.request.map { [$0.id] } ?? []) + turn.allActivities.map(\.id)
+        } ?? []
+        let sourceIDsNeededRepair = identityRepair.didRepair || Set(storedWorkingIDs).count != storedWorkingIDs.count
         let repairedWorkingCount: Int = if let repairTerminalState {
             AgentTranscriptQualityRepair.finalizePendingTerminalTools(
                 in: &workingItems,
@@ -437,7 +502,7 @@ actor AgentSessionDataService {
         )
         let normalizedTranscript: AgentTranscript?
         if let storedTranscript {
-            let shouldRebuildFromWorkingItems = repairedWorkingCount > 0
+            let shouldRebuildFromWorkingItems = sourceIDsNeededRepair || repairedWorkingCount > 0
                 || AgentTranscriptIO.containsRowsExcludedByPolicy(in: storedTranscript, policy: policy)
                 || (repairTerminalState != nil && AgentTranscriptQualityRepair.terminalMetadataRepairNeeded(in: storedTranscript))
             if shouldRebuildFromWorkingItems {
@@ -467,6 +532,7 @@ actor AgentSessionDataService {
         }
         let runtimeWorkingItems = runtimeTranscript.map(AgentTranscriptIO.workingSourceItems(from:)) ?? workingItems
         var runtimeSession = session
+        if runtimeSession.sourceHistory == nil { runtimeSession.sourceHistory = bootstrapSourceHistory(session, canonicalWorkingItems: workingItems) }
         runtimeSession.serializationVersion = AgentSession.currentSerializationVersion
         runtimeSession.fileURL = fileURL
         runtimeSession.lastRunState = restoredLastRunStateRaw
@@ -535,12 +601,14 @@ actor AgentSessionDataService {
     /// the deletion boundary and remove its derived metadata.
     private func persistSessionAndMetadata(
         _ session: AgentSession,
-        encodedData: Data,
         fileURL: URL,
         folder: URL,
         isLoadRepair: Bool
     ) async throws {
         let fileURL = fileURL.standardizedFileURL
+        await acquireSourceWrite(fileURL)
+        defer { releaseSourceWrite(fileURL) }
+        try Task.checkCancellation()
         try ensureSessionWriteAllowed(session.id, fileURL: fileURL)
         #if DEBUG
             if isLoadRepair, let testBeforeLoadRepairWriteHook {
@@ -548,9 +616,17 @@ actor AgentSessionDataService {
             }
         #endif
         try ensureSessionWriteAllowed(session.id, fileURL: fileURL)
+        var preserved = session
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            let existing = try decoder.decode(AgentSession.self, from: Data(contentsOf: fileURL))
+            preserved.sourceHistory = try AgentSourceHistory.merged(session.sourceHistory, with: existing.sourceHistory)
+        }
+        guard let history = preserved.sourceHistory else { throw SourceHistoryError.invalidHistory }
+        _ = try history.materialize(through: history.revision)
+        let encodedData = try JSONEncoder().encode(preserved)
         try await writeDataAtomically(encodedData, to: fileURL)
         try await discardSaveIfSessionWasDeleted(session.id, fileURL: fileURL, folder: folder)
-        await upsertMetadataRecord(metadataRecord(from: session, fileURL: fileURL), folder: folder)
+        await upsertMetadataRecord(metadataRecord(from: preserved, fileURL: fileURL), folder: folder)
         try await discardSaveIfSessionWasDeleted(session.id, fileURL: fileURL, folder: folder)
     }
 
@@ -1245,11 +1321,8 @@ actor AgentSessionDataService {
             preparation: preparation,
             trustedCanonicalItemCount: trustedCanonicalItemCount
         )
-        let freshEncoder = JSONEncoder()
-        let data = try freshEncoder.encode(sessionToSave)
         try await persistSessionAndMetadata(
             sessionToSave,
-            encodedData: data,
             fileURL: fileURL,
             folder: agentSessionsFolder,
             isLoadRepair: false
@@ -1297,10 +1370,8 @@ actor AgentSessionDataService {
                 )
             }
             if let persistedSession = persistedSessionToRewrite {
-                let encoded = try encoder.encode(persistedSession)
                 try await persistSessionAndMetadata(
                     persistedSession,
-                    encodedData: encoded,
                     fileURL: fileURL,
                     folder: fileURL.deletingLastPathComponent(),
                     isLoadRepair: true
@@ -1359,10 +1430,8 @@ actor AgentSessionDataService {
                    let persistedSession = normalized.persistedSessionToRewrite
                 {
                     do {
-                        let encoded = try encoder.encode(persistedSession)
                         try await persistSessionAndMetadata(
                             persistedSession,
-                            encodedData: encoded,
                             fileURL: fileURL,
                             folder: fileURL.deletingLastPathComponent(),
                             isLoadRepair: true
@@ -1382,6 +1451,7 @@ actor AgentSessionDataService {
                 fileURL: fileURL,
                 items: [],
                 transcript: nil,
+                sourceHistory: nil,
                 itemCount: count,
                 transcriptProjectionCounts: recoveredProjectionCounts,
                 lastUserMessageAt: recoveredLastUserMessageAt,

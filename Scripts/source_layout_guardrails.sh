@@ -771,6 +771,7 @@ print_matches \
 allowed_tracked_docs=(
   "docs/architecture/actionable-macos-notifications.md"
   "docs/architecture/agent-session-oversight-auto-wake.md"
+  "docs/architecture/agent-source-history.md"
   "docs/architecture/apple-identity-migration.md"
   "docs/architecture/codex-app-server-schema-gate.md"
   "docs/architecture/context-composer.md"

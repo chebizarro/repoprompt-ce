@@ -26,6 +26,9 @@ final class AgentTabSession: ObservableObject {
         }
     }
 
+    var sourceHistory = AgentSourceHistory()
+    var sourceHistoryDurableRevision = -1
+
     var transcript: AgentTranscript = .empty
     var baseTranscriptProjection: AgentTranscriptProjection = .empty
     var fullTranscriptProjection: AgentTranscriptProjection = .empty
@@ -1110,6 +1113,10 @@ final class AgentTabSession: ObservableObject {
 
     func installPersistentSessionBinding(_ binding: AgentPersistentSessionBindingIdentity?) {
         precondition(binding == nil || binding?.tabID == tabID)
+        if let previous = persistentSessionBindingIdentity, previous.sessionID != binding?.sessionID {
+            sourceHistory = AgentSourceHistory()
+            sourceHistoryDurableRevision = -1
+        }
         persistentSessionBindingIdentity = binding
         bindingTransitionInProgress = false
         restorationReadiness = currentRestorationBindingToken.map { .pending($0) } ?? .unbound

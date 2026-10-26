@@ -319,7 +319,7 @@ final class DomainAgentSessionOperationAuthorizerTests: XCTestCase {
             Set(sessionControlOperations.map(\.rawValue)),
             [
                 "agent_run.poll", "agent_run.wait", "agent_run.cancel", "agent_run.steer", "agent_run.respond",
-                "agent_manage.list_sessions", "agent_manage.get_log", "agent_manage.extract_handoff",
+                "agent_manage.list_sessions", "agent_manage.get_log", "agent_manage.get_source_history", "agent_manage.extract_handoff",
                 "agent_manage.resume_session", "agent_manage.stop_session", "agent_manage.cleanup_sessions",
             ]
         )
@@ -339,6 +339,7 @@ final class DomainAgentSessionOperationAuthorizerTests: XCTestCase {
         XCTAssertFalse(DomainAgentSessionTargetOperation.monitorPoll.isObserverScoped)
         XCTAssertFalse(DomainAgentSessionTargetOperation.monitorPoll.mutatesTarget)
         XCTAssertEqual(DomainAgentSessionTargetOperation.monitorPoll.requiredMonitorCapability, .poll)
+        XCTAssertFalse(DomainAgentSessionTargetOperation.manageGetSourceHistory.mutatesTarget)
         XCTAssertTrue(DomainAgentSessionTargetOperation.manageCleanup.mutatesTarget)
         // Snooze names a target because the policy is per-lane, but it never reaches that target: it
         // must stay a non-observer-scoped, non-mutating `.poll` operation, or it would either be

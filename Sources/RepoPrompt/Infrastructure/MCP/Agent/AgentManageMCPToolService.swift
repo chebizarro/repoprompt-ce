@@ -193,6 +193,8 @@ struct AgentManageMCPToolService {
             return try await executeListAgents(args: args)
         case "list_sessions":
             return try await executeListSessions(args: args)
+        case "get_source_history":
+            return try await executeGetSourceHistory(args: args)
         case "get_log":
             return try await executeGetLog(args: args)
         case "extract_handoff", "handoff":
@@ -593,6 +595,60 @@ struct AgentManageMCPToolService {
             ids.append(id)
         }
         return ids
+    }
+
+    private func executeGetSourceHistory(args: [String: Value]) async throws -> Value {
+        let reference = try requireNonEmptyString(args["session_id"], name: "session_id")
+        func integer(_ key: String, default fallback: Int?) throws -> Int? {
+            guard let value = args[key] else { return fallback }
+            guard case let .int(number) = value else { throw MCPError.invalidParams("\(key) must be an integer.") }
+            return number
+        }
+        let limit = try integer("limit", default: 100)!
+        let maxBytes = try integer("max_bytes", default: 1_048_576)!
+        let after = try integer("after_revision", default: nil)
+        let cursor: String?
+        if let value = args["cursor"] {
+            guard case let .string(text) = value, !text.isEmpty else { throw SourceHistoryError.invalidCursor }
+            cursor = text
+        } else { cursor = nil }
+        guard (1 ... 256).contains(limit), (1024 ... 8_388_608).contains(maxBytes),
+              after == nil || after! >= 0, cursor == nil || after == nil
+        else { throw SourceHistoryError.invalidCursor }
+        let metadata = await captureRequestMetadata()
+        let window = try requireTargetWindow()
+        guard let workspace = window.workspaceManager.activeWorkspace else { throw MCPError.invalidParams("No active workspace.") }
+        let vm = window.agentModeViewModel
+        try await authorizeSessionReference(
+            operation: .manageGetSourceHistory,
+            reference: reference,
+            metadata: metadata,
+            targetWindow: window,
+            agentModeVM: vm,
+            workspace: workspace
+        )
+        let id: UUID
+        let history: AgentSourceHistory
+        if let uuid = UUID(uuidString: reference), let live = try vm.authoritativeLiveSession(for: uuid),
+           let sessionID = live.activeAgentSessionID
+        {
+            id = sessionID
+            history = try await vm.durableSourceHistory(sessionID: sessionID, workspaceID: workspace.id)
+        } else {
+            guard let persisted = try await AgentSessionDataService.shared.loadAgentSession(reference: reference, for: workspace),
+                  let captured = persisted.sourceHistory else { throw MCPError.invalidParams("Session was not found in the active workspace.") }
+            id = persisted.id
+            history = captured
+        }
+        let page = try AgentSourceHistoryPage.make(
+            history: history,
+            sessionID: id,
+            cursor: cursor,
+            after: after,
+            limit: limit,
+            maxBytes: maxBytes
+        )
+        return try JSONDecoder().decode(Value.self, from: AgentSourceHistoryPage.wireEncoder().encode(page))
     }
 
     private func executeGetLog(args: [String: Value]) async throws -> Value {
