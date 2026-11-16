@@ -95,6 +95,14 @@ Before the ledger existed, usage had to be reconstructed from Codex rollout file
 - Within three steps of a judgment the agent read only ranges 57% of the time, read the whole file anyway 11%, and did not touch the file 31%. The 11% motivated workflow rule 2 and the Claude PreToolUse nudge.
 - Failures were not Jev errors: `--json` placed after the subcommand (fixed), `J="python3 …"; $J` under zsh (documented), empty `filter-search` input, guessed file paths (now reported with suggestions). 101 judgments were on files under 150 lines.
 
+## Claude PreToolUse auto-judge (hook pre-read)
+
+Query shape, built from the Claude Code transcript the hook receives via `transcript_path`: `Current step: <last 500 chars of the agent's last prose turn> | Task: <first 600 chars of the last user prompt>` (system-reminder and slash-command blocks stripped; tool results and thinking blocks ignored). It is then a normal `find-lines` judgment over the whole file with 10 lines of context.
+
+Rewrite policy: hits scoring under 25% of the best hit are "weak" and do not widen the read. If the strong hits' merged span is at most max(60, 20% of the file) lines, the read is rewritten to that span; otherwise to the best hit's range. Remaining strong ranges and weak ranges are listed in `additionalContext`. Presence `absent` leaves the read untouched with a note.
+
+Live calibration (jev-1.14.0, 2026-11-16): a 600-line haystack with one planted assignment, queried through the real session transcript — presence 0.96, best line p=1.00, one weak noise hit (score 0.028) correctly demoted; 21 of 600 lines delivered, $0.0008, 0.26 s wall with 3 windows in parallel. Before the weak-hit filter the same case widened to 199 lines.
+
 ## Tuning notes
 
 - Keep one condition per Noul; phrase for the affirmative.

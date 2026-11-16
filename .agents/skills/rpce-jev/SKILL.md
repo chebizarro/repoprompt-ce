@@ -64,9 +64,10 @@ All commands accept `--json` (before or after the subcommand) and otherwise end 
 ## Automatic pickup
 
 - **Codex** (RepoPrompt CE Agent Mode) lists installed skills in its system message, so it discovers `rpce-jev` from `~/.agents/skills` on its own.
-- **Claude Code and the RepoPrompt CE Claude provider** only load a skill on `/rpce-jev` or a description match. For automatic pickup run `jev.py install-claude-hooks` once; it merges two command hooks into `~/.claude/settings.json` (backup written alongside, `--uninstall` reverses it):
+- **Claude Code and the RepoPrompt CE Claude provider** only load a skill on `/rpce-jev` or a description match, and a deny-style nudge was overridden 68% of the time in the field. So the hooks do the judgment themselves. Run `jev.py install-claude-hooks` once; it merges two command hooks into `~/.claude/settings.json` (backup written alongside, `--uninstall` reverses it):
   - `SessionStart` prints a two-sentence reminder into context.
-  - `PreToolUse` on `Read` / `read_file` denies, **once per file per session**, a read of a file over `JEV_HOOK_MIN_LINES` (150) lines that has no range, with the exact `find-lines` command to run instead. Repeating the same read is allowed and recorded, so the ledger shows how often the nudge was overridden. `JEV_HOOK_DISABLE=1` turns it off. Hooks make no API calls and fail open.
+  - `PreToolUse` on `Read` / `read_file`, when a file over `JEV_HOOK_MIN_LINES` (150) lines is read without a range, **auto-judges it**: the hook builds a query from the transcript (the user's last prompt plus the agent's own last sentence of intent), runs `find-lines`, and rewrites the read to the relevant span via `updatedInput`, attaching the other candidate ranges as `additionalContext`. The agent's own read simply comes back narrowed, with the reason. If Jev judges the file unrelated to the task the full read proceeds with a one-line note; if the key or network fails the read proceeds silently. Once per file per session — a second range-less read passes through unchanged and is recorded so the ledger shows how often the narrowing was overridden.
+  - `JEV_HOOK_MODE=judge` (default) | `nudge` (deny once with the command to run) | `off`. `JEV_HOOK_CONTEXT` (10) sets context lines around hits, `JEV_HOOK_TIMEOUT` (25 s) the per-request timeout, `JEV_WORKERS` (4) parallel windows. Cost is a normal `find-lines` call (about $0.001-0.004 per judged read).
 
 ## Measuring savings
 

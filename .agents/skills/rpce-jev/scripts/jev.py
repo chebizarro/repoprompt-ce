@@ -37,9 +37,11 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -69,6 +71,9 @@ LEDGER_PATH = Path(os.environ.get("JEV_LEDGER_PATH") or (STATE_DIR / "ledger.jso
 LEDGER_MAX_BYTES = _env_int("JEV_LEDGER_MAX_BYTES", 8 * 1024 * 1024)  # one rotation kept => <= 2x this on disk
 NUDGE_STATE_PATH = STATE_DIR / "nudges.json"
 HOOK_MIN_LINES = _env_int("JEV_HOOK_MIN_LINES", 150)
+HOOK_CONTEXT_LINES = _env_int("JEV_HOOK_CONTEXT", 10)
+HOOK_TIMEOUT_S = float(_env_int("JEV_HOOK_TIMEOUT", 25))
+HOOK_WORKERS = _env_int("JEV_WORKERS", 4)
 HOOK_MAX_COUNT_BYTES = 4 * 1024 * 1024  # above this, assume "long" without counting lines
 HOOK_SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".pdf", ".ipynb", ".zip", ".gz", ".tar", ".bin", ".dylib", ".so", ".o", ".a", ".wasm", ".sqlite", ".db"}
 SCRIPT_PATH = Path(__file__).resolve()
@@ -141,6 +146,7 @@ class JevClient:
         self.input_tokens = 0
         self.output_tokens = 0
         self.elapsed = 0.0
+        self._lock = threading.Lock()
 
     def ask(self, state: Any, questions: dict[str, dict[str, Any]]) -> dict[str, Any]:
         payload = {"state": state, "model": self.model, "questions": questions}
@@ -176,11 +182,12 @@ class JevClient:
                     delay *= 2
                     continue
                 raise JevError(f"Network error talking to {url}: {error}") from None
-            self.elapsed += time.monotonic() - started
             usage = data.get("usage") or {}
-            self.requests += 1
-            self.input_tokens += int(usage.get("input_tokens") or 0)
-            self.output_tokens += int(usage.get("output_tokens") or 0)
+            with self._lock:
+                self.elapsed += time.monotonic() - started
+                self.requests += 1
+                self.input_tokens += int(usage.get("input_tokens") or 0)
+                self.output_tokens += int(usage.get("output_tokens") or 0)
             if "answers" not in data:
                 raise JevError(f"Unexpected response shape: {json.dumps(data)[:600]}")
             return data
@@ -276,8 +283,9 @@ def rank_candidates(
     presence * p; treat it as a ranking heuristic, not a calibrated probability.
     """
     results: dict[str, dict[str, float]] = {}
-    presences: list[float] = []
-    for window in chunk_candidates(candidates):
+    windows = chunk_candidates(candidates)
+
+    def judge(window: list[tuple[str, str]]) -> tuple[dict[str, float], float]:
         document = "\n".join(f"{cid}|{text}" for cid, text in window)
         state = {"query": query, "document": document}
         questions = {
@@ -297,8 +305,16 @@ def rank_candidates(
             },
         }
         answers = client.ask(state, questions)["answers"]
-        probabilities = answers["best"].get("probabilities") or {}
-        presence = float(answers["present"].get("noul") or 0.0)
+        return answers["best"].get("probabilities") or {}, float(answers["present"].get("noul") or 0.0)
+
+    # Windows are independent requests; run a few at a time (results keep window order).
+    if len(windows) > 1 and HOOK_WORKERS > 1:
+        with ThreadPoolExecutor(max_workers=min(HOOK_WORKERS, len(windows))) as pool:
+            judged = list(pool.map(judge, windows))
+    else:
+        judged = [judge(w) for w in windows]
+    presences: list[float] = []
+    for window, (probabilities, presence) in zip(windows, judged):
         presences.append(presence)
         for cid, _ in window:
             p = float(probabilities.get(cid) or 0.0)
@@ -345,33 +361,62 @@ def emit(
 # --------------------------------------------------------------------------- find-lines
 
 
-def cmd_find_lines(args: argparse.Namespace, client: JevClient) -> None:
-    text = read_text(args.file)
-    lines = text.splitlines()
+def judge_lines(
+    client: JevClient,
+    lines: list[str],
+    query: str,
+    lo: int = 1,
+    hi: int | None = None,
+    top: int = 8,
+    threshold: float = 0.02,
+    presence_threshold: float = 0.7,
+    partial_threshold: float = 0.35,
+    context: int = 6,
+) -> dict[str, Any]:
+    """Core of find-lines, shared with the Claude hook: rank lines, label presence, build read ranges."""
     total = len(lines)
-    lo = max(1, args.start or 1)
-    hi = min(total, args.end or total)
+    lo = max(1, lo)
+    hi = min(total, hi or total)
     candidates = [(f"L{n:05d}", lines[n - 1].rstrip()) for n in range(lo, hi + 1) if lines[n - 1].strip()]
     if not candidates:
         raise JevError("No non-empty lines to rank")
     results, presences = rank_candidates(
         client,
-        args.query,
+        query,
         candidates,
         presence_true="At least one line states, implements, or directly implies an answer to the query.",
         presence_false="No line addresses the query; the closest lines are only loosely related.",
     )
     ranked = sorted(results.items(), key=lambda item: item[1]["score"], reverse=True)
-    top = [(cid, r) for cid, r in ranked[: args.top] if r["score"] >= args.threshold]
-    if not top and ranked:
-        top = [ranked[0]]
+    kept = [(cid, r) for cid, r in ranked[:top] if r["score"] >= threshold]
+    if not kept and ranked:
+        kept = [ranked[0]]
     overall = max(presences) if presences else 0.0
-    label = presence_label(overall, args.presence_threshold, args.partial_threshold)
-    hits = [{"line": int(cid[1:]), **r} for cid, r in top]
-    ranges = merge_ranges((h["line"] for h in hits), args.context, total)
+    label = presence_label(overall, presence_threshold, partial_threshold)
+    hits = [{"line": int(cid[1:]), **r} for cid, r in kept]
+    ranges = merge_ranges((h["line"] for h in hits), context, total)
+    return {"total": total, "candidates": len(candidates), "presences": presences, "presence": overall, "label": label, "hits": hits, "ranges": ranges}
+
+
+def cmd_find_lines(args: argparse.Namespace, client: JevClient) -> None:
+    lines = read_text(args.file).splitlines()
+    judged = judge_lines(
+        client,
+        lines,
+        args.query,
+        args.start or 1,
+        args.end,
+        args.top,
+        args.threshold,
+        args.presence_threshold,
+        args.partial_threshold,
+        args.context,
+    )
+    total, presences, overall, label = judged["total"], judged["presences"], judged["presence"], judged["label"]
+    hits, ranges, candidates = judged["hits"], judged["ranges"], judged["candidates"]
 
     name = args.file if args.file != "-" else "<stdin>"
-    out = [f"{name}: {total} lines, {len(candidates)} candidates, {len(presences)} window(s)"]
+    out = [f"{name}: {total} lines, {candidates} candidates, {len(presences)} window(s)"]
     out.append(f"presence={overall:.2f} ({label}) windows=" + ",".join(f"{p:.2f}" for p in presences))
     for i, h in enumerate(hits, 1):
         out.append(f"{i:2d}. {name}:{h['line']}  score={h['score']:.3f} p={h['p']:.3f}  {lines[h['line'] - 1].strip()[:100]}")
@@ -390,7 +435,7 @@ def cmd_find_lines(args: argparse.Namespace, client: JevClient) -> None:
         detail={
             "file": name,
             "lines_total": total,
-            "lines_judged": len(candidates),
+            "lines_judged": candidates,
             "lines_returned": returned,
             "ranges": len(ranges) if label != "absent" else 0,
             "presence": round(overall, 3),
@@ -894,6 +939,16 @@ def cmd_ledger(args: argparse.Namespace, client: JevClient | None) -> None:
         nudged = hook_events.get("read_nudge", 0)
         repeated = hook_events.get("read_full_after_nudge", 0)
         print(f"hooks: {hook_events}" + (f"   full-read-anyway after nudge: {repeated}/{nudged}" if nudged else ""))
+        aj = [r for r in hooks if r.get("event") == "read_autojudge"]
+        if aj:
+            aj_total = sum(int(r.get("lines") or 0) for r in aj)
+            aj_ret = sum(int(r.get("lines_returned") or 0) for r in aj)
+            aj_cost = sum(float(r.get("cost_usd") or 0.0) for r in aj)
+            aj_over = hook_events.get("read_full_after_autojudge", 0)
+            print(
+                f"auto-judged reads: {len(aj)}, {aj_total:,} lines -> {aj_ret:,} delivered "
+                f"({100.0 * aj_ret / aj_total:.1f}% coverage), ${aj_cost:.4f}; full re-read afterwards: {aj_over}/{len(aj)}"
+            )
     for r in failures:
         print(f"  fail {r.get('ts')} [{r.get('cmd')}] {(r.get('error') or '')[:140]}")
 
@@ -929,46 +984,202 @@ def hook_session_start(event: dict[str, Any]) -> None:
     )
 
 
+TRANSCRIPT_TAIL_BYTES = 400_000
+
+
+def clean_prompt_text(text: str) -> str:
+    text = re.sub(r"<system-reminder>.*?</system-reminder>", " ", text, flags=re.S)
+    text = re.sub(r"<(?:command-name|command-message|command-args|local-command-stdout)>.*?</(?:command-name|command-message|command-args|local-command-stdout)>", " ", text, flags=re.S)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def transcript_context(path: str | None) -> tuple[str, str]:
+    """Best-effort (last user prompt, last assistant prose) from a Claude Code transcript JSONL."""
+    if not path:
+        return "", ""
+    try:
+        source = Path(path)
+        size = source.stat().st_size
+        with source.open("rb") as handle:
+            if size > TRANSCRIPT_TAIL_BYTES:
+                handle.seek(size - TRANSCRIPT_TAIL_BYTES)
+            raw = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return "", ""
+    user_text = assistant_text = ""
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("isMeta"):
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            blocks: list[Any] = [{"type": "text", "text": content}]
+        elif isinstance(content, list):
+            blocks = content
+        else:
+            continue
+        texts = [b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"]
+        text = clean_prompt_text("\n".join(t for t in texts if isinstance(t, str)))
+        if not text:
+            continue  # tool results, thinking-only turns, pure tool_use turns
+        if event.get("type") == "user":
+            user_text = text
+        elif event.get("type") == "assistant":
+            assistant_text = text
+    return user_text, assistant_text
+
+
+def hook_query(user_text: str, assistant_text: str) -> str:
+    parts = []
+    if assistant_text:
+        parts.append("Current step: " + assistant_text[-500:])
+    if user_text:
+        parts.append("Task: " + user_text[:600])
+    return " | ".join(parts)
+
+
+STRONG_HIT_FRACTION = 0.25  # hits below this fraction of the best score do not widen the rewritten read
+
+
+def choose_read_span(ranges: list[tuple[int, int]], hits: list[dict[str, Any]], total: int) -> tuple[int, int]:
+    """One contiguous span for the rewritten read: all strong hits if compact, else the best hit's range."""
+    span = (ranges[0][0], ranges[-1][1])
+    if span[1] - span[0] + 1 <= max(60, int(0.2 * total)):
+        return span
+    best_line = hits[0]["line"] if hits else ranges[0][0]
+    for start, end in ranges:
+        if start <= best_line <= end:
+            return (start, end)
+    return ranges[0]
+
+
+def split_hits(hits: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not hits:
+        return [], []
+    cutoff = hits[0]["score"] * STRONG_HIT_FRACTION
+    strong = [h for h in hits if h["score"] >= cutoff]
+    weak = [h for h in hits if h["score"] < cutoff]
+    return strong, weak
+
+
+def hook_allow(updated_input: dict[str, Any] | None = None, context: str | None = None) -> None:
+    out: dict[str, Any] = {"hookEventName": "PreToolUse", "permissionDecision": "allow"}
+    if updated_input is not None:
+        out["updatedInput"] = updated_input
+    if context:
+        out["additionalContext"] = context
+    print(json.dumps({"hookSpecificOutput": out}))
+
+
+def hook_deny(reason: str) -> None:
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}))
+
+
 def hook_pre_read(event: dict[str, Any]) -> None:
-    if os.environ.get("JEV_HOOK_DISABLE", "").strip().lower() in ("1", "true", "yes"):
+    mode = os.environ.get("JEV_HOOK_MODE", "judge").strip().lower()
+    if mode in ("off", "0", "false") or os.environ.get("JEV_HOOK_DISABLE", "").strip().lower() in ("1", "true", "yes"):
         return
     tool_input = event.get("tool_input") or {}
+    tool_name = str(event.get("tool_name") or "")
     path = tool_input.get("file_path") or tool_input.get("path")
     if not isinstance(path, str) or not path:
         return
     if any(tool_input.get(k) not in (None, "", 0) for k in ("offset", "limit", "start_line", "end_line")):
         return
+    cwd = Path(event.get("cwd") or Path.cwd())
     target = Path(path).expanduser()
     if not target.is_absolute():
-        target = Path(event.get("cwd") or Path.cwd()) / target
+        target = cwd / target
     if not target.is_file() or target.suffix.lower() in HOOK_SKIP_SUFFIXES:
         return
-    size = target.stat().st_size
-    lines: int | None
-    if size > HOOK_MAX_COUNT_BYTES:
-        lines = None
-    else:
-        lines = target.read_bytes().count(b"\n") + 1
-        if lines < HOOK_MIN_LINES:
-            return
+    if target.stat().st_size > HOOK_MAX_COUNT_BYTES:
+        return  # the Read tool truncates these anyway; not worth a judgment
+    lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+    total = len(lines)
+    if total < HOOK_MIN_LINES:
+        return
     session = str(event.get("session_id") or "nosession")
     key = str(target.resolve())
     state = nudge_state_load()
     seen = state.setdefault(session, [])
-    base = {"kind": "hook", "session": session, "harness": "claude", "repo": repo_name(Path(event.get("cwd") or Path.cwd())), "file": key, "lines": lines, "tool": event.get("tool_name")}
+    base = {"kind": "hook", "session": session, "harness": "claude", "repo": repo_name(cwd), "file": key, "lines": total, "tool": tool_name, "mode": mode}
     if key in seen:
-        ledger_append({**base, "event": "read_full_after_nudge"})
+        ledger_append({**base, "event": "read_full_after_autojudge" if mode == "judge" else "read_full_after_nudge"})
         return
     seen.append(key)
     nudge_state_save(state)
-    ledger_append({**base, "event": "read_nudge"})
-    reason = (
-        f"rpce-jev: {target.name} has {lines if lines is not None else 'very many'} lines and this read has no range. "
+
+    nudge_reason = (
+        f"rpce-jev: {target.name} has {total} lines and this read has no range. "
         f"Run `python3 {SCRIPT_PATH} find-lines --query \"<what you need from this file>\" --file {path}` and read only the returned "
         "ranges, or re-issue the read with a range (start_line/limit or offset/limit). If you need the whole file, repeat this exact "
         "read — it will be allowed — and say why in your reply."
     )
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}))
+    if mode != "judge":
+        ledger_append({**base, "event": "read_nudge"})
+        hook_deny(nudge_reason)
+        return
+
+    user_text, assistant_text = transcript_context(event.get("transcript_path"))
+    query = hook_query(user_text, assistant_text)
+    if not query:
+        ledger_append({**base, "event": "read_nudge", "note": "no transcript context"})
+        hook_deny(nudge_reason)
+        return
+    started = time.monotonic()
+    try:
+        client = JevClient(
+            resolve_api_key(),
+            os.environ.get("TYPESAFE_BASE_URL", DEFAULT_BASE_URL),
+            os.environ.get("TYPESAFE_DEFAULT_MODEL", DEFAULT_MODEL),
+            timeout=HOOK_TIMEOUT_S,
+        )
+        judged = judge_lines(client, lines, query, context=HOOK_CONTEXT_LINES)
+    except JevError as error:
+        ledger_append({**base, "event": "read_autojudge_error", "error": str(error)[:300], "wall_s": round(time.monotonic() - started, 2)})
+        return  # fail open: the original read proceeds
+    usage = client.usage_dict()
+    label, presence, hits, ranges = judged["label"], judged["presence"], judged["hits"], judged["ranges"]
+    record = {**base, "query_chars": len(query), "presence": round(presence, 3), "label": label, "wall_s": round(time.monotonic() - started, 2), **usage}
+    if label == "absent" or not ranges:
+        ledger_append({**record, "event": "read_autojudge_absent", "lines_returned": total})
+        hook_allow(
+            context=(
+                f"rpce-jev: Jev judged {target.name} ({total} lines) unlikely to address the current task "
+                f"(presence {presence:.2f}); the full read went ahead. If you are looking for something specific, it is probably elsewhere."
+            ),
+        )
+        return
+    strong, weak = split_hits(hits)
+    strong_ranges = merge_ranges((h["line"] for h in strong), HOOK_CONTEXT_LINES, total) or ranges
+    start, end = choose_read_span(strong_ranges, strong or hits, total)
+    updated = dict(tool_input)
+    if tool_name == "Read":
+        updated["offset"] = start
+        updated["limit"] = end - start + 1
+    else:
+        updated["start_line"] = start
+        updated["limit"] = end - start + 1
+    others = [(s_, e_) for s_, e_ in strong_ranges if not (s_ >= start and e_ <= end)]
+    weak_ranges = [(s_, e_) for s_, e_ in merge_ranges((h["line"] for h in weak), HOOK_CONTEXT_LINES, total) if not (s_ >= start and e_ <= end)]
+    ledger_append({**record, "event": "read_autojudge", "lines_returned": end - start + 1, "ranges": len(ranges), "strong_ranges": len(strong_ranges), "span": [start, end]})
+    arg_hint = "offset/limit" if tool_name == "Read" else "start_line/limit"
+    context = (
+        f"rpce-jev: {target.name} has {total} lines; Jev judged it against the current task (presence {presence:.2f}, {label}) "
+        f"and this read was narrowed to lines {start}-{end} (${usage['cost_usd']:.4f}, {record['wall_s']}s)."
+    )
+    if others:
+        context += " Other relevant ranges: " + ", ".join(f"{s_}-{e_}" for s_, e_ in others) + f" — read them with {arg_hint} if needed."
+    if weak_ranges:
+        context += " Weak candidates: " + ", ".join(f"{s_}-{e_}" for s_, e_ in weak_ranges) + "."
+    context += " A second range-less read of this file is passed through unchanged."
+    hook_allow(updated, context)
 
 
 def cmd_hook(args: argparse.Namespace, client: JevClient | None) -> None:
@@ -992,7 +1203,7 @@ def hook_settings_entries(script: Path) -> dict[str, dict[str, Any]]:
         "SessionStart": {"matcher": "", "hooks": [{"type": "command", "command": f"{base} session-start", "timeout": 10}]},
         "PreToolUse": {
             "matcher": "Read|mcp__RepoPrompt__read_file|mcp__RepoPromptCE__read_file",
-            "hooks": [{"type": "command", "command": f"{base} pre-read", "timeout": 10}],
+            "hooks": [{"type": "command", "command": f"{base} pre-read", "timeout": 60}],
         },
     }
 
@@ -1041,8 +1252,9 @@ def cmd_install_claude_hooks(args: argparse.Namespace, client: JevClient | None)
     action = "removed from" if args.uninstall else "installed into"
     print(f"rpce-jev hooks {action} {settings_path} (script: {script})")
     if not args.uninstall:
-        print("SessionStart: advertises the skill; PreToolUse (Read / read_file): nudges once per file over "
-              f"{HOOK_MIN_LINES} lines read without a range. Open /hooks or restart Claude Code to load them.")
+        print("SessionStart: advertises the skill; PreToolUse (Read / read_file): auto-judges a range-less read of a file over "
+              f"{HOOK_MIN_LINES} lines against the current task and narrows it (JEV_HOOK_MODE=judge|nudge|off). "
+              "Open /hooks or restart Claude Code to load them.")
 
 
 # --------------------------------------------------------------------------- main
